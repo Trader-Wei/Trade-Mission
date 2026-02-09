@@ -22,6 +22,8 @@ import 'package:image_picker/image_picker.dart';
 
 import 'bg_image_loader.dart';
 
+import 'dynamic_background.dart';
+
 
 
 // 型別轉換工具：防止 Windows 版因為整數/小數不分而崩潰
@@ -1307,6 +1309,8 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
       {'id': 'gradient_warm', 'label': '暖色漸層', 'desc': '深褐紅'},
 
+      {'id': 'dynamic', 'label': '動態背景', 'desc': '光球・線條・粒子'},
+
       {'id': 'custom', 'label': '自訂圖片', 'desc': kIsWeb ? '從本機選擇圖片（網頁版）' : '從相簿選擇'},
 
     ];
@@ -2519,6 +2523,24 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
           imageWidget,
 
           Container(decoration: BoxDecoration(gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.black.withOpacity(0.5), Colors.black.withOpacity(0.75)]))),
+
+        ],
+
+      );
+
+    }
+
+    if (_bgMode == 'dynamic') {
+
+      return Stack(
+
+        fit: StackFit.expand,
+
+        children: [
+
+          const DynamicBackground(),
+
+          Container(decoration: BoxDecoration(gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.black.withOpacity(0.25), Colors.black.withOpacity(0.5)]))),
 
         ],
 
