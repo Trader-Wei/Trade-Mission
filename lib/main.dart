@@ -4,6 +4,12 @@ import 'dart:async';
 
 import 'dart:convert';
 
+import 'dart:math';
+
+import 'package:crypto/crypto.dart';
+
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+
 import 'package:http/http.dart' as http;
 
 import 'package:shared_preferences/shared_preferences.dart';
@@ -52,6 +58,13 @@ String _fmtDuration(dynamic entryMs, dynamic settledMs) {
 
 }
 
+/// 是否為做多（未填或 'long' 視為做多）
+bool _isLong(Map<String, dynamic> p) =>
+    p['side'] == null || p['side'] == 'long' || p['side'] == '做多';
+
+String _sideLabel(Map<String, dynamic> p) =>
+    _isLong(p) ? '做多' : '做空';
+
 double _pnlAmount(Map<String, dynamic> p) {
 
   final u = toD(p['uValue']);
@@ -64,7 +77,9 @@ double _pnlAmount(Map<String, dynamic> p) {
 
   if (ent == 0) return 0;
 
-  final base = u * (cur - ent) / ent * lev;
+  final priceDiff = _isLong(p) ? (cur - ent) : (ent - cur);
+
+  final base = u * priceDiff / ent * lev;
 
   final ratio = toD(p['exitRatio']);
 
@@ -80,11 +95,13 @@ double? _rrValue(Map<String, dynamic> p) {
 
   final sl = toD(p['sl']);
 
-  final risk = ent - sl;
+  final risk = _isLong(p) ? (ent - sl) : (sl - ent);
 
   if (risk <= 0) return null;
 
-  return (cur - ent) / risk;
+  final pnlDir = _isLong(p) ? (cur - ent) : (ent - cur);
+
+  return pnlDir / risk;
 
 }
 
@@ -190,6 +207,22 @@ const _achievements = [
 
   {'id': 'tasks_3', 'title': '多線作戰', 'desc': '同時監控 3 筆任務', 'emoji': '📋'},
 
+  {'id': 'level_5', 'title': '初出茅廬', 'desc': '達到等級 5', 'emoji': '🌱'},
+
+  {'id': 'level_10', 'title': '小有成就', 'desc': '達到等級 10', 'emoji': '🌿'},
+
+  {'id': 'level_20', 'title': '經驗豐富', 'desc': '達到等級 20', 'emoji': '🌳'},
+
+  {'id': 'profit_streak_3', 'title': '連勝新手', 'desc': '連續 3 天盈利', 'emoji': '🔥'},
+
+  {'id': 'profit_streak_7', 'title': '連勝達人', 'desc': '連續 7 天盈利', 'emoji': '💥'},
+
+  {'id': 'tp_streak_3', 'title': '止盈連擊', 'desc': '連續 3 次止盈', 'emoji': '⚡'},
+
+  {'id': 'tp_streak_5', 'title': '止盈大師', 'desc': '連續 5 次止盈', 'emoji': '✨'},
+
+  {'id': 'daily_all', 'title': '任務全清', 'desc': '單日完成所有每日任務', 'emoji': '🎯'},
+
 ];
 
 
@@ -198,7 +231,385 @@ const _achievementKey = 'anya_unlocked_achievements';
 
 const _statsKey = 'anya_stats';
 
+const _levelKey = 'anya_level_data';
 
+const _dailyTasksKey = 'anya_daily_tasks';
+
+const _streakKey = 'anya_streak_data';
+
+// --- 等級系統：經驗值計算規則 ---
+
+int _calculateExp(Map<String, dynamic> pos) {
+
+  int exp = 0;
+
+  final pnl = _pnlAmount(pos);
+
+  final status = pos['status']?.toString() ?? '';
+
+  if (status.contains('止盈')) {
+
+    exp += 50; // 止盈基礎經驗
+
+    if (pnl > 0) exp += (pnl / 10).floor().clamp(0, 200); // 依營利額外經驗
+
+  } else if (status.contains('止損')) {
+
+    exp += 10; // 止損也有經驗（學習經驗）
+
+  } else if (status.contains('手動出場')) {
+
+    exp += 30; // 手動出場基礎經驗
+
+    if (pnl > 0) exp += (pnl / 15).floor().clamp(0, 150);
+
+  }
+
+  return exp;
+
+}
+
+// 等級計算：每級所需經驗 = 100 * level^1.5（向上取整）
+
+int _expForLevel(int level) => (100 * sqrt(level * level * level)).ceil();
+
+int _levelFromExp(int totalExp) {
+
+  int level = 1;
+
+  while (_expForLevel(level) <= totalExp) level++;
+
+  return level - 1;
+
+}
+
+// --- 每日任務定義 ---
+
+const _dailyTasks = [
+
+  {'id': 'add_task', 'title': '新增任務', 'desc': '新增 1 筆監控任務', 'exp': 20, 'emoji': '📝'},
+
+  {'id': 'settle_task', 'title': '完成結算', 'desc': '完成 1 筆結算（止盈/止損/手動出場）', 'exp': 30, 'emoji': '✅'},
+
+  {'id': 'tp_today', 'title': '今日止盈', 'desc': '今日達成 1 次止盈', 'exp': 50, 'emoji': '⭐'},
+
+  {'id': 'record_3', 'title': '記錄達人', 'desc': '今日記錄 3 筆以上', 'exp': 40, 'emoji': '📊'},
+
+];
+
+// --- 連續紀錄計算 ---
+
+Future<Map<String, dynamic>> _calculateStreaks(List<dynamic> positions) async {
+
+  final prefs = await SharedPreferences.getInstance();
+
+  final raw = prefs.getString(_streakKey);
+
+  Map<String, dynamic> streaks = raw != null ? json.decode(raw) : {};
+
+  final now = DateTime.now();
+
+  final today = DateTime(now.year, now.month, now.day);
+
+  final settled = positions.where((p) => p['status']?.toString().contains('止盈') == true || 
+
+    p['status']?.toString().contains('止損') == true || 
+
+    p['status']?.toString().contains('手動出場') == true).toList();
+
+  // 連續盈利天數
+
+  int profitDays = streaks['profitDays'] ?? 0;
+
+  DateTime? lastProfitDate = streaks['lastProfitDate'] != null ? 
+
+    DateTime.fromMillisecondsSinceEpoch(streaks['lastProfitDate']) : null;
+
+  final todayProfit = settled.where((p) {
+
+    final s = p['settledAt'];
+
+    if (s == null) return false;
+
+    final d = DateTime.fromMillisecondsSinceEpoch(s is num ? s.toInt() : int.parse(s.toString()));
+
+    return d.year == today.year && d.month == today.month && d.day == today.day && _pnlAmount(p) > 0;
+
+  }).isNotEmpty;
+
+  if (todayProfit) {
+
+    if (lastProfitDate == null || (today.difference(DateTime(lastProfitDate.year, lastProfitDate.month, lastProfitDate.day)).inDays > 1)) {
+
+      profitDays = 1;
+
+    } else if (today.difference(DateTime(lastProfitDate.year, lastProfitDate.month, lastProfitDate.day)).inDays == 1) {
+
+      profitDays++;
+
+    }
+
+    streaks['lastProfitDate'] = today.millisecondsSinceEpoch;
+
+  } else if (lastProfitDate != null && today.difference(DateTime(lastProfitDate.year, lastProfitDate.month, lastProfitDate.day)).inDays > 1) {
+
+    profitDays = 0;
+
+  }
+
+  streaks['profitDays'] = profitDays;
+
+  // 連續止盈次數
+
+  int tpStreak = streaks['tpStreak'] ?? 0;
+
+  final lastTp = settled.where((p) => p['status']?.toString().contains('止盈') == true).toList();
+
+  if (lastTp.isNotEmpty) {
+
+    final lastTpTime = lastTp.map((p) => p['settledAt']).whereType<dynamic>().map((s) => 
+
+      s is num ? s.toInt() : int.tryParse(s.toString()) ?? 0).reduce((a, b) => a > b ? a : b);
+
+    // final lastTpDate = DateTime.fromMillisecondsSinceEpoch(lastTpTime); // 未使用，註解掉
+
+    final todayTp = lastTp.where((p) {
+
+      final s = p['settledAt'];
+
+      if (s == null) return false;
+
+      final d = DateTime.fromMillisecondsSinceEpoch(s is num ? s.toInt() : int.parse(s.toString()));
+
+      return d.year == today.year && d.month == today.month && d.day == today.day;
+
+    }).isNotEmpty;
+
+    if (todayTp && (streaks['lastTpDate'] == null || 
+
+      today.difference(DateTime.fromMillisecondsSinceEpoch(streaks['lastTpDate'])).inDays <= 1)) {
+
+      if (streaks['lastTpDate'] == null || 
+
+        today.difference(DateTime.fromMillisecondsSinceEpoch(streaks['lastTpDate'])).inDays == 1) {
+
+        tpStreak++;
+
+      }
+
+      streaks['lastTpDate'] = today.millisecondsSinceEpoch;
+
+    } else if (streaks['lastTpDate'] != null && 
+
+      today.difference(DateTime.fromMillisecondsSinceEpoch(streaks['lastTpDate'])).inDays > 1) {
+
+      tpStreak = 0;
+
+    }
+
+  }
+
+  streaks['tpStreak'] = tpStreak;
+
+  await prefs.setString(_streakKey, json.encode(streaks));
+
+  return streaks;
+
+}
+
+
+
+// --- API 設定與多交易所倉位同步 ---
+
+const _apiExchangeKey = 'anya_api_exchange';
+
+const _apiKeyStorageKey = 'anya_api_key';
+
+const _apiSecretStorageKey = 'anya_api_secret';
+
+/// 支援的交易所列舉，value 為下拉顯示名稱
+
+const Map<String, String> kSupportedExchanges = {
+
+  'binance': 'Binance 合約',
+
+  'bittap': 'BitTap (bittap.com)',
+
+  'bybit': 'Bybit（即將支援）',
+
+  'okx': 'OKX（即將支援）',
+
+};
+
+String _binanceSignature(String secret, String queryString) {
+
+  final key = utf8.encode(secret);
+
+  final bytes = utf8.encode(queryString);
+
+  final hmacSha256 = Hmac(sha256, key);
+
+  final digest = hmacSha256.convert(bytes);
+
+  return digest.bytes.map((e) => e.toRadixString(16).padLeft(2, '0')).join();
+
+}
+
+/// 呼叫 Binance GET /fapi/v2/positionRisk，回傳 list 或 null（失敗時）
+
+Future<List<dynamic>?> _fetchBinancePositionRisk(String apiKey, String apiSecret) async {
+
+  try {
+
+    const baseUrl = 'https://fapi.binance.com';
+
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+
+    final query = 'timestamp=$timestamp';
+
+    final signature = _binanceSignature(apiSecret, query);
+
+    final uri = Uri.parse('$baseUrl/fapi/v2/positionRisk?$query&signature=$signature');
+
+    final res = await http.get(uri, headers: {'X-MBX-APIKEY': apiKey});
+
+    if (res.statusCode != 200) return null;
+
+    final list = json.decode(res.body) as List;
+
+    return list;
+
+  } catch (_) {
+
+    return null;
+
+  }
+
+}
+
+/// BitTap 簽名：GET 無參時 data = "&timestamp=xxx&nonce=xxx"，再 HMAC-SHA256(hex)
+String _bittapSign(String secret, String signData) {
+
+  final key = utf8.encode(secret);
+
+  final bytes = utf8.encode(signData);
+
+  final hmacSha256 = Hmac(sha256, key);
+
+  final digest = hmacSha256.convert(bytes);
+
+  return digest.bytes.map((e) => e.toRadixString(16).padLeft(2, '0')).join();
+
+}
+
+/// BitTap (bittap.com) 合約持倉 API，依 developers.bittap.com 鑑權認證
+Future<List<dynamic>?> _fetchBittapPositions(String apiKey, String apiSecret) async {
+
+  try {
+
+    const baseUrl = 'https://api.bittap.com';
+
+    final ts = DateTime.now().millisecondsSinceEpoch.toString();
+
+    final nonce = '${DateTime.now().millisecondsSinceEpoch}${(1000 + (DateTime.now().microsecond % 900))}';
+
+    final signData = '&timestamp=$ts&nonce=$nonce';
+
+    final signature = _bittapSign(apiSecret, signData);
+
+    final uri = Uri.parse('$baseUrl/api/v1/futures/position/list');
+
+    final res = await http.get(uri, headers: {
+
+      'X-BT-APIKEY': apiKey,
+
+      'X-BT-SIGN': signature,
+
+      'X-BT-TS': ts,
+
+      'X-BT-NONCE': nonce,
+
+      'Content-Type': 'application/json',
+
+    });
+
+    if (res.statusCode != 200) return null;
+
+    final body = json.decode(res.body);
+
+    List<dynamic> rawList = [];
+
+    if (body is List) {
+
+      rawList = body;
+
+    } else if (body is Map && body['data'] is List) {
+
+      rawList = body['data'] as List;
+
+    } else if (body is Map && body['list'] is List) {
+
+      rawList = body['list'] as List;
+
+    } else if (body is Map && body['positions'] is List) {
+
+      rawList = body['positions'] as List;
+
+    }
+
+    final out = <Map<String, dynamic>>[];
+
+    for (final raw in rawList) {
+
+      final m = raw is Map ? Map<String, dynamic>.from(raw as Map) : <String, dynamic>{};
+
+      final symbol = (m['symbol'] ?? m['symbolName'] ?? m['symbolId'] ?? '').toString();
+
+      if (symbol.isEmpty) continue;
+
+      final entryPrice = toD(m['entryPrice'] ?? m['avgPrice'] ?? m['openPrice']);
+
+      final markPrice = toD(m['markPrice'] ?? m['lastPrice'] ?? m['mark'] ?? m['markPrice']);
+
+      if (entryPrice <= 0) continue;
+
+      num amt = toD(m['positionAmt'] ?? m['size'] ?? m['position'] ?? m['quantity'] ?? m['positionSize']);
+
+      final sideStr = (m['side'] ?? m['positionSide'] ?? '').toString().toLowerCase();
+
+      if (amt == 0 && (sideStr == 'short' || sideStr == 'long')) amt = toD(m['size'] ?? m['position'] ?? m['quantity'] ?? m['positionSize']);
+
+      if (sideStr == 'short' && amt > 0) amt = -amt;
+
+      if (amt == 0) continue;
+
+      final leverage = (m['leverage'] is num) ? (m['leverage'] as num).toInt() : int.tryParse(m['leverage']?.toString() ?? '') ?? 1;
+
+      out.add({
+
+        'symbol': symbol,
+
+        'entryPrice': entryPrice,
+
+        'markPrice': markPrice,
+
+        'leverage': leverage < 1 ? 1 : leverage,
+
+        'positionAmt': amt.toDouble(),
+
+      });
+
+    }
+
+    return out;
+
+  } catch (_) {
+
+    return null;
+
+  }
+
+}
 
 /// 取得指定週期的 OI 變動百分比（最近一期），失敗或資料不足回傳 null
 
@@ -354,6 +765,12 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
   bool isLoading = true;
 
+  Map<String, dynamic>? _levelData;
+
+  Map<String, dynamic>? _streakData;
+
+  final _secureStorage = const FlutterSecureStorage(aOptions: AndroidOptions(encryptedSharedPreferences: true));
+
 
 
   @override
@@ -404,11 +821,21 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
         }
 
+        for (final p in positions) {
+
+          if (p is! Map) continue;
+
+          if (p['side'] == null) p['side'] = 'long';
+
+        }
+
       });
 
       await _persistPositions();
 
     }
+
+    _refreshLevelAndStreak();
 
     setState(() => isLoading = false);
 
@@ -426,7 +853,324 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
   }
 
+  Future<void> _refreshLevelAndStreak() async {
 
+    final level = await _getLevelData();
+
+    final streak = await _calculateStreaks(positions);
+
+    if (mounted) setState(() { _levelData = level; _streakData = streak; });
+
+  }
+
+  Future<String?> _getApiExchange() => _secureStorage.read(key: _apiExchangeKey);
+
+  Future<String?> _getApiKey() => _secureStorage.read(key: _apiKeyStorageKey);
+
+  Future<String?> _getApiSecret() => _secureStorage.read(key: _apiSecretStorageKey);
+
+  Future<void> _setApiCredentials(String exchange, String key, String secret) async {
+
+    await _secureStorage.write(key: _apiExchangeKey, value: exchange);
+
+    await _secureStorage.write(key: _apiKeyStorageKey, value: key);
+
+    await _secureStorage.write(key: _apiSecretStorageKey, value: secret);
+
+  }
+
+  /// 回傳 (錯誤訊息, 成功時加入的筆數)。無錯誤時 error 為 null。
+  Future<(String?, int)> _syncPositionsFromApi() async {
+
+    final exchange = await _getApiExchange();
+
+    final apiKey = await _getApiKey();
+
+    final apiSecret = await _getApiSecret();
+
+    if (apiKey == null || apiSecret == null || apiKey.isEmpty || apiSecret.isEmpty) {
+
+      return ('請先填寫並儲存 API Key 與 Secret', 0);
+
+    }
+
+    List<dynamic>? list;
+
+    if (exchange == 'binance') {
+
+      list = await _fetchBinancePositionRisk(apiKey, apiSecret);
+
+    } else if (exchange == 'bittap') {
+
+      list = await _fetchBittapPositions(apiKey, apiSecret);
+
+    } else {
+
+      return ('此交易所尚未支援同步，敬請期待', 0);
+
+    }
+
+    if (list == null) {
+
+      if (exchange == 'bittap') return ('無法取得 BitTap 倉位（請檢查 API 權限、網路或端點路徑）', 0);
+
+      return ('無法取得倉位（請檢查 API 權限與網路）', 0);
+
+    }
+
+    final watchingSymbols = positions.where((p) => p['status'].toString().contains('監控中')).map((p) => p['symbol'] as String).toSet();
+
+    int added = 0;
+
+    final now = DateTime.now();
+
+    for (final raw in list) {
+
+      final map = raw as Map;
+
+      final positionAmt = toD(map['positionAmt']);
+
+      if (positionAmt == 0) continue;
+
+      final symbol = map['symbol'] as String? ?? '';
+
+      if (symbol.isEmpty) continue;
+
+      if (watchingSymbols.contains(symbol)) continue;
+
+      final entryPrice = toD(map['entryPrice']);
+
+      final markPrice = toD(map['markPrice']);
+
+      final leverage = (map['leverage'] is num) ? (map['leverage'] as num).toInt() : int.tryParse(map['leverage']?.toString() ?? '') ?? 1;
+
+      final notional = (positionAmt.abs() * entryPrice);
+
+      final uValue = notional / leverage;
+
+      final side = positionAmt > 0 ? 'long' : 'short';
+
+      positions.add({
+
+        'symbol': symbol,
+
+        'leverage': leverage,
+
+        'uValue': uValue,
+
+        'entry': entryPrice,
+
+        'current': markPrice,
+
+        'entryTime': now.millisecondsSinceEpoch,
+
+        'tp1': 0.0,
+
+        'tp2': 0.0,
+
+        'tp3': 0.0,
+
+        'sl': 0.0,
+
+        'status': '監控中',
+
+        'side': side,
+
+      });
+
+      watchingSymbols.add(symbol);
+
+      added++;
+
+    }
+
+    await _persistPositions();
+
+    if (added == 0 && list.isNotEmpty) return ('目前無新倉位可加入（可能已存在同交易對監控中）', 0);
+
+    if (added == 0) return ('目前無持倉', 0);
+
+    return (null, added);
+
+  }
+
+  void _showApiSettings() async {
+
+    final savedExchange = await _getApiExchange();
+
+    final keyController = TextEditingController(text: await _getApiKey() ?? '');
+
+    final secretController = TextEditingController(text: await _getApiSecret() ?? '');
+
+    String selectedExchange = savedExchange ?? 'binance';
+
+    if (!mounted) return;
+
+    showModalBottomSheet(
+
+      context: context,
+
+      isScrollControlled: true,
+
+      backgroundColor: const Color(0xFF1A1A1A),
+
+      builder: (ctx) => StatefulBuilder(
+
+        builder: (context, setModalState) => Padding(
+
+          padding: EdgeInsets.only(left: 20, right: 20, top: 20, bottom: MediaQuery.of(ctx).viewInsets.bottom + 24),
+
+          child: SingleChildScrollView(
+
+            child: Column(
+
+              mainAxisSize: MainAxisSize.min,
+
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+
+              children: [
+
+                const Text('API 設定（多交易所）', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFFFFC0CB))),
+
+                const SizedBox(height: 8),
+
+                const Text('用於自動讀取當前持倉並建立監控任務。請使用僅具「讀取」權限的 API，勿勾選提現與交易。', style: TextStyle(fontSize: 11, color: Colors.grey)),
+
+                const SizedBox(height: 16),
+
+                const Text('交易所', style: TextStyle(fontSize: 12, color: Colors.grey)),
+
+                const SizedBox(height: 6),
+
+                DropdownButtonFormField<String>(
+
+                  value: kSupportedExchanges.containsKey(selectedExchange) ? selectedExchange : 'binance',
+
+                  decoration: const InputDecoration(border: OutlineInputBorder()),
+
+                  dropdownColor: const Color(0xFF2A2A2A),
+
+                  items: kSupportedExchanges.entries.map((e) => DropdownMenuItem(value: e.key, child: Text(e.value))).toList(),
+
+                  onChanged: (v) { if (v != null) { selectedExchange = v; setModalState(() {}); } },
+
+                ),
+
+                const SizedBox(height: 16),
+
+                TextField(
+
+                  controller: keyController,
+
+                  decoration: const InputDecoration(labelText: 'API Key', border: OutlineInputBorder()),
+
+                  obscureText: false,
+
+                ),
+
+                const SizedBox(height: 12),
+
+                TextField(
+
+                  controller: secretController,
+
+                  decoration: const InputDecoration(labelText: 'API Secret', border: OutlineInputBorder()),
+
+                  obscureText: true,
+
+                ),
+
+                const SizedBox(height: 20),
+
+                Row(
+
+                  children: [
+
+                    Expanded(
+
+                      child: OutlinedButton.icon(
+
+                        icon: const Icon(Icons.save_outlined),
+
+                        label: const Text('儲存'),
+
+                        onPressed: () async {
+
+                          await _setApiCredentials(selectedExchange, keyController.text.trim(), secretController.text);
+
+                          if (!ctx.mounted) return;
+
+                          Navigator.pop(ctx);
+
+                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('API 已儲存'), behavior: SnackBarBehavior.floating));
+
+                        },
+
+                      ),
+
+                    ),
+
+                    const SizedBox(width: 12),
+
+                    Expanded(
+
+                      child: FilledButton.icon(
+
+                        icon: const Icon(Icons.sync),
+
+                        label: const Text('同步倉位'),
+
+                        style: FilledButton.styleFrom(backgroundColor: const Color(0xFFFFC0CB)),
+
+                        onPressed: () async {
+
+                          await _setApiCredentials(selectedExchange, keyController.text.trim(), secretController.text);
+
+                          Navigator.pop(ctx);
+
+                        final messenger = ScaffoldMessenger.of(context);
+
+                        messenger.showSnackBar(const SnackBar(content: Text('正在同步倉位…'), behavior: SnackBarBehavior.floating));
+
+                        final (msg, added) = await _syncPositionsFromApi();
+
+                        if (!mounted) return;
+
+                        setState(() {});
+
+                        messenger.showSnackBar(SnackBar(
+
+                          content: Text(msg ?? '已加入 $added 筆監控任務'),
+
+                          backgroundColor: msg != null ? Colors.orange : Colors.green,
+
+                          behavior: SnackBarBehavior.floating,
+
+                        ));
+
+                      },
+
+                    ),
+
+                  ),
+
+                ],
+
+              ),
+
+            ],
+
+          ),
+
+        ),
+
+      ),
+
+      ),
+
+    );
+
+  }
 
   Future<void> _refresh() async {
 
@@ -472,11 +1216,25 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
             final tp1 = toD(positions[i]['tp1']), tp2 = toD(positions[i]['tp2']), tp3 = toD(positions[i]['tp3']);
 
-            if (tp3 > 0 && cur >= tp3) positions[i]['hitTp'] = 'TP3';
+            final isLong = _isLong(positions[i]);
 
-            else if (tp2 > 0 && cur >= tp2) positions[i]['hitTp'] = 'TP2';
+            if (isLong) {
 
-            else if (tp1 > 0 && cur >= tp1) positions[i]['hitTp'] = 'TP1';
+              if (tp3 > 0 && cur >= tp3) positions[i]['hitTp'] = 'TP3';
+
+              else if (tp2 > 0 && cur >= tp2) positions[i]['hitTp'] = 'TP2';
+
+              else if (tp1 > 0 && cur >= tp1) positions[i]['hitTp'] = 'TP1';
+
+            } else {
+
+              if (tp3 > 0 && cur <= tp3) positions[i]['hitTp'] = 'TP3';
+
+              else if (tp2 > 0 && cur <= tp2) positions[i]['hitTp'] = 'TP2';
+
+              else if (tp1 > 0 && cur <= tp1) positions[i]['hitTp'] = 'TP1';
+
+            }
 
           }
 
@@ -510,27 +1268,43 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
     if (hitSl) await _onHitSl();
 
+    _refreshLevelAndStreak();
+
   }
 
 
 
   void _checkLogic(int i) {
 
-    double cur = toD(positions[i]['current']);
+    final pos = positions[i];
 
-    double sl = toD(positions[i]['sl']);
+    double cur = toD(pos['current']);
 
-    double tp1 = toD(positions[i]['tp1']);
+    double sl = toD(pos['sl']);
 
-    double tp2 = toD(positions[i]['tp2']);
+    double tp1 = toD(pos['tp1']);
 
-    double tp3 = toD(positions[i]['tp3']);
+    double tp2 = toD(pos['tp2']);
+
+    double tp3 = toD(pos['tp3']);
 
     double targetTp = tp3 > 0 ? tp3 : (tp2 > 0 ? tp2 : tp1);
 
-    if (cur <= sl) positions[i]['status'] = '止損出局 ⚡️';
+    final isLong = _isLong(pos);
 
-    else if (targetTp > 0 && cur >= targetTp) positions[i]['status'] = '止盈達標 ⭐️';
+    if (isLong) {
+
+      if (cur <= sl) pos['status'] = '止損出局 ⚡️';
+
+      else if (targetTp > 0 && cur >= targetTp) pos['status'] = '止盈達標 ⭐️';
+
+    } else {
+
+      if (cur >= sl) pos['status'] = '止損出局 ⚡️';
+
+      else if (targetTp > 0 && cur <= targetTp) pos['status'] = '止盈達標 ⭐️';
+
+    }
 
   }
 
@@ -626,6 +1400,158 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
   }
 
+  // --- 等級系統：取得/儲存等級資料 ---
+
+  Future<Map<String, dynamic>> _getLevelData() async {
+
+    final prefs = await SharedPreferences.getInstance();
+
+    final raw = prefs.getString(_levelKey);
+
+    if (raw == null) return {'exp': 0, 'level': 1};
+
+    try {
+
+      return json.decode(raw);
+
+    } catch (_) {
+
+      return {'exp': 0, 'level': 1};
+
+    }
+
+  }
+
+  Future<void> _addExp(int exp, {bool showNotification = true}) async {
+
+    if (exp <= 0) return;
+
+    final data = await _getLevelData();
+
+    final oldExp = data['exp'] ?? 0;
+
+    final oldLevel = _levelFromExp(oldExp);
+
+    final newExp = oldExp + exp;
+
+    final newLevel = _levelFromExp(newExp);
+
+    data['exp'] = newExp;
+
+    data['level'] = newLevel;
+
+    final prefs = await SharedPreferences.getInstance();
+
+    await prefs.setString(_levelKey, json.encode(data));
+
+    if (!mounted) return;
+
+    if (newLevel > oldLevel && showNotification) {
+
+      ScaffoldMessenger.of(context).showSnackBar(
+
+        SnackBar(
+
+          content: Text("🎉 升級！等級 $oldLevel → $newLevel (+$exp EXP)"),
+
+          backgroundColor: const Color(0xFF9C27B0),
+
+          behavior: SnackBarBehavior.floating,
+
+          duration: const Duration(seconds: 3),
+
+        ),
+
+      );
+
+    } else if (showNotification && exp > 0) {
+
+      ScaffoldMessenger.of(context).showSnackBar(
+
+        SnackBar(
+
+          content: Text("+$exp EXP (等級 $newLevel)"),
+
+          backgroundColor: const Color(0xFF673AB7),
+
+          behavior: SnackBarBehavior.floating,
+
+          duration: const Duration(seconds: 2),
+
+        ),
+
+      );
+
+    }
+
+  }
+
+  // --- 每日任務：取得/重置/完成檢查 ---
+
+  Future<Map<String, dynamic>> _getDailyTasks() async {
+
+    final prefs = await SharedPreferences.getInstance();
+
+    final raw = prefs.getString(_dailyTasksKey);
+
+    final now = DateTime.now();
+
+    final today = DateTime(now.year, now.month, now.day).millisecondsSinceEpoch;
+
+    Map<String, dynamic> tasks = raw != null ? json.decode(raw) : {};
+
+    if (tasks['date'] != today) {
+
+      tasks = {'date': today, 'completed': {}};
+
+      await prefs.setString(_dailyTasksKey, json.encode(tasks));
+
+    }
+
+    return tasks;
+
+  }
+
+  Future<void> _checkDailyTask(String taskId) async {
+
+    final tasks = await _getDailyTasks();
+
+    final completed = Set<String>.from((tasks['completed'] as Map? ?? {}).keys.cast<String>());
+
+    if (completed.contains(taskId)) return;
+
+    final task = _dailyTasks.firstWhere((t) => t['id'] == taskId, orElse: () => {});
+
+    if (task.isEmpty) return;
+
+    completed.add(taskId);
+
+    tasks['completed'] = Map.fromEntries(completed.map((id) => MapEntry(id, true)));
+
+    final prefs = await SharedPreferences.getInstance();
+
+    await prefs.setString(_dailyTasksKey, json.encode(tasks));
+
+    await _addExp((task['exp'] as num? ?? 0).toInt(), showNotification: true);
+
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+
+      SnackBar(
+
+        content: Text("✅ 每日任務完成：${task['emoji']} ${task['title']} (+${task['exp']} EXP)"),
+
+        backgroundColor: const Color(0xFF4CAF50),
+
+        behavior: SnackBarBehavior.floating,
+
+      ),
+
+    );
+
+  }
+
 
 
   Future<void> _onHitTp() async {
@@ -636,13 +1562,27 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
     await _saveStats(stats);
 
-    if (!mounted) return;
+    // 計算經驗值（從最後一筆止盈的 position）
 
-    ScaffoldMessenger.of(context).showSnackBar(
+    final lastTp = positions.where((p) => p['status']?.toString().contains('止盈') == true).toList();
 
-      const SnackBar(content: Text("やった！Mission complete ⭐️"), backgroundColor: Color(0xFF4CAF50), behavior: SnackBarBehavior.floating),
+    if (lastTp.isNotEmpty) {
 
-    );
+      final exp = _calculateExp(lastTp.last);
+
+      await _addExp(exp, showNotification: false);
+
+    }
+
+    // 檢查每日任務
+
+    await _checkDailyTask('tp_today');
+
+    await _checkDailyTask('settle_task');
+
+                // 檢查連續紀錄和成就
+
+                final streaks = await _calculateStreaks(this.positions);
 
     final unlocked = await _getUnlocked();
 
@@ -651,6 +1591,48 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
     if (stats['totalTp']! >= 5 && !unlocked.contains('tp_5')) await _unlock('tp_5');
 
     if (stats['totalTp']! >= 10 && !unlocked.contains('tp_10')) await _unlock('tp_10');
+
+    final tpStreak = streaks['tpStreak'] ?? 0;
+
+    if (tpStreak >= 3 && !unlocked.contains('tp_streak_3')) await _unlock('tp_streak_3');
+
+    if (tpStreak >= 5 && !unlocked.contains('tp_streak_5')) await _unlock('tp_streak_5');
+
+    // 檢查連續盈利天數成就
+
+    final profitDays = streaks['profitDays'] ?? 0;
+
+    if (profitDays >= 3 && !unlocked.contains('profit_streak_3')) await _unlock('profit_streak_3');
+
+    if (profitDays >= 7 && !unlocked.contains('profit_streak_7')) await _unlock('profit_streak_7');
+
+    // 檢查每日任務全部完成成就
+
+    final tasks = await _getDailyTasks();
+
+    final completed = Set<String>.from((tasks['completed'] as Map? ?? {}).keys.cast<String>());
+
+    if (completed.length == _dailyTasks.length && !unlocked.contains('daily_all')) await _unlock('daily_all');
+
+    // 檢查等級成就
+
+    final levelData = await _getLevelData();
+
+    final level = levelData['level'] ?? 1;
+
+    if (level >= 5 && !unlocked.contains('level_5')) await _unlock('level_5');
+
+    if (level >= 10 && !unlocked.contains('level_10')) await _unlock('level_10');
+
+    if (level >= 20 && !unlocked.contains('level_20')) await _unlock('level_20');
+
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+
+      const SnackBar(content: Text("やった！Mission complete ⭐️"), backgroundColor: Color(0xFF4CAF50), behavior: SnackBarBehavior.floating),
+
+    );
 
   }
 
@@ -664,6 +1646,30 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
     await _saveStats(stats);
 
+    // 計算經驗值
+
+    final lastSl = positions.where((p) => p['status']?.toString().contains('止損') == true).toList();
+
+    if (lastSl.isNotEmpty) {
+
+      final exp = _calculateExp(lastSl.last);
+
+      await _addExp(exp, showNotification: false);
+
+    }
+
+    // 檢查每日任務
+
+    await _checkDailyTask('settle_task');
+
+    // 檢查連續紀錄（止損會中斷盈利連續）
+
+    await _calculateStreaks(positions);
+
+    final unlocked = await _getUnlocked();
+
+    if (!unlocked.contains('first_sl')) await _unlock('first_sl');
+
     if (!mounted) return;
 
     ScaffoldMessenger.of(context).showSnackBar(
@@ -672,17 +1678,217 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
     );
 
-    final unlocked = await _getUnlocked();
-
-    if (!unlocked.contains('first_sl')) await _unlock('first_sl');
-
   }
 
 
 
-  void _showAchievements() async {
+  void _showLevelAndAchievements() async {
+
+    final levelData = _levelData ?? await _getLevelData();
+
+    final streakData = _streakData ?? await _calculateStreaks(positions);
 
     final unlocked = await _getUnlocked();
+
+    if (!mounted) return;
+
+    final exp = levelData['exp'] ?? 0;
+
+    final level = levelData['level'] ?? 1;
+
+    final nextExp = _expForLevel(level + 1);
+
+    final currentLevelExp = _expForLevel(level);
+
+    final progress = (nextExp - currentLevelExp) > 0
+
+        ? ((exp - currentLevelExp) / (nextExp - currentLevelExp)).clamp(0.0, 1.0)
+
+        : 1.0;
+
+    final profitDays = streakData['profitDays'] ?? 0;
+
+    final tpStreak = streakData['tpStreak'] ?? 0;
+
+    showModalBottomSheet(
+
+      context: context,
+
+      backgroundColor: const Color(0xFF1A1A1A),
+
+      isScrollControlled: true,
+
+      builder: (ctx) => DraggableScrollableSheet(
+
+        initialChildSize: 0.6,
+
+        minChildSize: 0.3,
+
+        maxChildSize: 0.9,
+
+        expand: false,
+
+        builder: (context, scrollController) => SingleChildScrollView(
+
+          controller: scrollController,
+
+          padding: const EdgeInsets.all(20),
+
+          child: Column(
+
+            crossAxisAlignment: CrossAxisAlignment.start,
+
+            mainAxisSize: MainAxisSize.min,
+
+            children: [
+
+              Row(
+
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+
+                children: [
+
+                  const Text("🏆 等級與經驗", style: TextStyle(color: Color(0xFFFFC0CB), fontSize: 20, fontWeight: FontWeight.bold)),
+
+                  Container(
+
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+
+                    decoration: BoxDecoration(
+
+                      gradient: const LinearGradient(colors: [Color(0xFF9C27B0), Color(0xFF673AB7)]),
+
+                      borderRadius: BorderRadius.circular(20),
+
+                    ),
+
+                    child: Text("Lv.$level", style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
+
+                  ),
+
+                ],
+
+              ),
+
+              const SizedBox(height: 8),
+
+              Text("$exp / $nextExp EXP", style: const TextStyle(fontSize: 12, color: Colors.grey)),
+
+              const SizedBox(height: 6),
+
+              ClipRRect(
+
+                borderRadius: BorderRadius.circular(8),
+
+                child: LinearProgressIndicator(
+
+                  value: progress,
+
+                  minHeight: 8,
+
+                  backgroundColor: Colors.grey.shade800,
+
+                  valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFFFFC0CB)),
+
+                ),
+
+              ),
+
+              const SizedBox(height: 16),
+
+              Row(
+
+                mainAxisAlignment: MainAxisAlignment.spaceAround,
+
+                children: [
+
+                  Column(children: [
+
+                    const Text("🔥", style: TextStyle(fontSize: 24)),
+
+                    const SizedBox(height: 4),
+
+                    Text("連續盈利", style: TextStyle(fontSize: 11, color: Colors.grey.shade400)),
+
+                    Text("$profitDays 天", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: profitDays >= 3 ? const Color(0xFFFF5722) : Colors.grey)),
+
+                  ]),
+
+                  Column(children: [
+
+                    const Text("⚡", style: TextStyle(fontSize: 24)),
+
+                    const SizedBox(height: 4),
+
+                    Text("連續止盈", style: TextStyle(fontSize: 11, color: Colors.grey.shade400)),
+
+                    Text("$tpStreak 次", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: tpStreak >= 3 ? const Color(0xFF4CAF50) : Colors.grey)),
+
+                  ]),
+
+                ],
+
+              ),
+
+              const SizedBox(height: 24),
+
+              const Text("已獲得成就", style: TextStyle(color: Color(0xFFFFC0CB), fontSize: 16, fontWeight: FontWeight.bold)),
+
+              const SizedBox(height: 8),
+
+              ..._achievements.map((a) {
+
+                final id = a['id'] as String;
+
+                final isUnlocked = unlocked.contains(id);
+
+                final isTpRelated = id.contains('tp') || id.contains('first_tp');
+
+                return ListTile(
+
+                  leading: Row(
+
+                    mainAxisSize: MainAxisSize.min,
+
+                    children: [
+
+                      Text(isTpRelated ? '⭐' : '⚡', style: const TextStyle(fontSize: 18)),
+
+                      const SizedBox(width: 4),
+
+                      Text(a['emoji'] as String, style: const TextStyle(fontSize: 22)),
+
+                    ],
+
+                  ),
+
+                  title: Text(isUnlocked ? a['title'] as String : '???', style: TextStyle(color: isUnlocked ? Colors.white : Colors.grey, fontSize: 14)),
+
+                  subtitle: Text(isUnlocked ? a['desc'] as String : '尚未解鎖', style: const TextStyle(fontSize: 11, color: Colors.grey)),
+
+                );
+
+              }),
+
+            ],
+
+          ),
+
+        ),
+
+      ),
+
+    );
+
+  }
+
+  void _showDailyTasksPopup() async {
+
+    final tasks = await _getDailyTasks();
+
+    final completed = Set<String>.from((tasks['completed'] as Map? ?? {}).keys.cast<String>());
+
+    final allCompleted = completed.length == _dailyTasks.length;
 
     if (!mounted) return;
 
@@ -696,31 +1902,113 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
         padding: const EdgeInsets.all(20),
 
-        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+        child: Column(
 
-          const Text("🏆 成就 / 稱號", style: TextStyle(color: Color(0xFFFFC0CB), fontSize: 20, fontWeight: FontWeight.bold)),
+          mainAxisSize: MainAxisSize.min,
 
-          const SizedBox(height: 12),
+          crossAxisAlignment: CrossAxisAlignment.start,
 
-          ..._achievements.map((a) {
+          children: [
 
-            final id = a['id'] as String;
+            Row(
 
-            final isUnlocked = unlocked.contains(id);
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
 
-            return ListTile(
+              children: [
 
-              leading: Text(a['emoji'] as String, style: const TextStyle(fontSize: 24)),
+                const Text("📋 每日任務", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFFFFC0CB))),
 
-              title: Text(isUnlocked ? a['title'] as String : '???', style: TextStyle(color: isUnlocked ? Colors.white : Colors.grey)),
+                if (allCompleted)
 
-              subtitle: Text(isUnlocked ? a['desc'] as String : '尚未解鎖', style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                  Container(
 
-            );
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
 
-          }),
+                    decoration: BoxDecoration(
 
-        ]),
+                      color: const Color(0xFF4CAF50),
+
+                      borderRadius: BorderRadius.circular(12),
+
+                    ),
+
+                    child: const Text("全部完成！", style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white)),
+
+                  ),
+
+              ],
+
+            ),
+
+            const SizedBox(height: 16),
+
+            ..._dailyTasks.map((task) {
+
+              final isDone = completed.contains(task['id']);
+
+              return Padding(
+
+                padding: const EdgeInsets.only(bottom: 12),
+
+                child: Row(
+
+                  children: [
+
+                    Container(
+
+                      width: 28,
+
+                      height: 28,
+
+                      decoration: BoxDecoration(
+
+                        color: isDone ? const Color(0xFF4CAF50) : Colors.grey.shade700,
+
+                        shape: BoxShape.circle,
+
+                      ),
+
+                      child: Center(
+
+                        child: isDone ? const Icon(Icons.check, size: 18, color: Colors.white) : Text(task['emoji'] as String, style: const TextStyle(fontSize: 14)),
+
+                      ),
+
+                    ),
+
+                    const SizedBox(width: 12),
+
+                    Expanded(
+
+                      child: Column(
+
+                        crossAxisAlignment: CrossAxisAlignment.start,
+
+                        children: [
+
+                          Text(task['title'] as String, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500, color: isDone ? Colors.grey.shade400 : Colors.white, decoration: isDone ? TextDecoration.lineThrough : null)),
+
+                          Text(task['desc'] as String, style: const TextStyle(fontSize: 11, color: Colors.grey)),
+
+                        ],
+
+                      ),
+
+                    ),
+
+                    Text("+${task['exp']} EXP", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: isDone ? Colors.grey.shade500 : const Color(0xFF9C27B0))),
+
+                  ],
+
+                ),
+
+              );
+
+            }),
+
+          ],
+
+        ),
 
       ),
 
@@ -852,7 +2140,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
                     'entryTime': pos['entryTime'], 'tp1': pos['tp1'], 'tp2': pos['tp2'], 'tp3': pos['tp3'], 'sl': pos['sl'],
 
-                    'status': '手動出場', 'settledAt': DateTime.now().millisecondsSinceEpoch, 'exitRatio': 1.0, 'exitRatioDisplay': ratio,
+                    'side': pos['side'], 'status': '手動出場', 'settledAt': DateTime.now().millisecondsSinceEpoch, 'exitRatio': 1.0, 'exitRatioDisplay': ratio,
 
                     'candles': c.isNotEmpty ? _serializeCandles(c) : null,
 
@@ -871,6 +2159,48 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
                 }
 
                 await _persistPositions();
+
+                // 計算經驗值和檢查每日任務
+
+                final settledPos = ratio >= 1.0 ? pos : positions.lastWhere((p) => p['status']?.toString().contains('手動出場') == true && p['settledAt'] != null, orElse: () => pos);
+
+                final exp = _calculateExp(settledPos);
+
+                await _addExp(exp, showNotification: false);
+
+                await _checkDailyTask('settle_task');
+
+                // 檢查連續紀錄和成就
+
+                final streaks = await _calculateStreaks(this.positions);
+
+                final pnl = _pnlAmount(settledPos);
+
+                if (pnl > 0) {
+
+                  final unlocked = await _getUnlocked();
+
+                  final profitDays = streaks['profitDays'] ?? 0;
+
+                  if (profitDays >= 3 && !unlocked.contains('profit_streak_3')) await _unlock('profit_streak_3');
+
+                  if (profitDays >= 7 && !unlocked.contains('profit_streak_7')) await _unlock('profit_streak_7');
+
+                }
+
+                // 檢查每日任務全部完成成就
+
+                final tasks = await _getDailyTasks();
+
+                final completed = Set<String>.from((tasks['completed'] as Map? ?? {}).keys.cast<String>());
+
+                if (completed.length == _dailyTasks.length) {
+
+                  final unlocked = await _getUnlocked();
+
+                  if (!unlocked.contains('daily_all')) await _unlock('daily_all');
+
+                }
 
               },
 
@@ -916,7 +2246,59 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
           actions: [
 
-            IconButton(icon: const Icon(Icons.emoji_events_outlined), onPressed: _showAchievements),
+            InkWell(
+
+              onTap: _showLevelAndAchievements,
+
+              child: Padding(
+
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+
+                child: Row(
+
+                  mainAxisSize: MainAxisSize.min,
+
+                  children: [
+
+                    const Icon(Icons.emoji_events_outlined, color: Color(0xFFFFC0CB), size: 22),
+
+                    const SizedBox(width: 4),
+
+                    Text(
+
+                      'Lv.${_levelData?['level'] ?? 1}',
+
+                      style: const TextStyle(fontSize: 12, color: Colors.white70),
+
+                    ),
+
+                  ],
+
+                ),
+
+              ),
+
+            ),
+
+            IconButton(
+
+              icon: const Icon(Icons.checklist_rounded),
+
+              tooltip: '每日任務',
+
+              onPressed: _showDailyTasksPopup,
+
+            ),
+
+            IconButton(
+
+              icon: const Icon(Icons.key),
+
+              tooltip: 'API 設定 / 同步倉位',
+
+              onPressed: _showApiSettings,
+
+            ),
 
           ],
 
@@ -1112,19 +2494,45 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
             onTap: () => _showDetail(pos),
 
-            title: Text("${pos['symbol']} (${pos['leverage']}x)"),
+            leading: PopupMenuButton<String>(
 
-            subtitle: Text(subtitle),
+              icon: const Icon(Icons.more_vert),
 
-            trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+              tooltip: '操作',
 
-              if (!isSettled) IconButton(icon: const Icon(Icons.exit_to_app), tooltip: '手動出場', onPressed: () => _showManualExit(pos)),
+              padding: EdgeInsets.zero,
 
-              IconButton(icon: const Icon(Icons.edit_outlined), onPressed: () => _showEdit(pos)),
+              onSelected: (value) {
 
-              IconButton(icon: const Icon(Icons.delete_outline), onPressed: () async { setState(() => positions.remove(pos)); await _persistPositions(); }),
+                if (value == 'exit') _showManualExit(pos);
 
-            ]),
+                else if (value == 'edit') _showEdit(pos);
+
+                else if (value == 'delete') { setState(() => positions.remove(pos)); _persistPositions(); }
+
+              },
+
+              itemBuilder: (ctx) {
+
+                final items = <PopupMenuItem<String>>[
+
+                  const PopupMenuItem(value: 'edit', child: ListTile(leading: Icon(Icons.edit_outlined, size: 20), title: Text('編輯', style: TextStyle(fontSize: 14)))),
+
+                  const PopupMenuItem(value: 'delete', child: ListTile(leading: Icon(Icons.delete_outline, size: 20), title: Text('刪除', style: TextStyle(fontSize: 14)))),
+
+                ];
+
+                if (!isSettled) items.insert(0, const PopupMenuItem(value: 'exit', child: ListTile(leading: Icon(Icons.exit_to_app, size: 20), title: Text('手動出場', style: TextStyle(fontSize: 14)))));
+
+                return items;
+
+              },
+
+            ),
+
+            title: Text("${pos['symbol']} (${pos['leverage']}x) ${_sideLabel(pos)}"),
+
+            subtitle: Text(subtitle, maxLines: 2, overflow: TextOverflow.ellipsis),
 
           ),
 
@@ -1148,7 +2556,9 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
     final ratio = toD(p['exitRatio']) > 0 ? toD(p['exitRatio']) : 1.0;
 
-    return (((cur - ent) / ent) * 100 * lev * ratio).toStringAsFixed(2);
+    final priceDiff = _isLong(Map<String, dynamic>.from(p)) ? (cur - ent) : (ent - cur);
+
+    return ((priceDiff / ent) * 100 * lev * ratio).toStringAsFixed(2);
 
   }
 
@@ -1364,6 +2774,8 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
     DateTime entryTime = DateTime.now();
 
+    bool isLong = true;
+
     showModalBottomSheet(context: context, isScrollControlled: true, builder: (ctx) {
 
       return StatefulBuilder(
@@ -1391,6 +2803,42 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
               ]),
 
               TextField(controller: cs['ent'], decoration: const InputDecoration(labelText: "進場價"), keyboardType: TextInputType.number),
+
+              const SizedBox(height: 12),
+
+              const Text("方向", style: TextStyle(fontSize: 12, color: Colors.grey)),
+
+              const SizedBox(height: 6),
+
+              Row(children: [
+
+                ChoiceChip(
+
+                  label: const Text("做多"),
+
+                  selected: isLong,
+
+                  onSelected: (_) { isLong = true; setModalState(() {}); },
+
+                  selectedColor: const Color(0xFF4CAF50).withOpacity(0.6),
+
+                ),
+
+                const SizedBox(width: 12),
+
+                ChoiceChip(
+
+                  label: const Text("做空"),
+
+                  selected: !isLong,
+
+                  onSelected: (_) { isLong = false; setModalState(() {}); },
+
+                  selectedColor: const Color(0xFFFF5722).withOpacity(0.6),
+
+                ),
+
+              ]),
 
               const SizedBox(height: 8),
 
@@ -1480,11 +2928,17 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
                     'tp1': toD(cs['tp1']!.text), 'tp2': toD(cs['tp2']!.text), 'tp3': toD(cs['tp3']!.text),
 
-                    'sl': toD(cs['sl']!.text), 'status': '監控中'
+                    'sl': toD(cs['sl']!.text), 'status': '監控中',
+
+                    'side': isLong ? 'long' : 'short'
 
                   }));
 
                   Navigator.pop(ctx);
+
+                  // 檢查每日任務
+
+                  await _checkDailyTask('add_task');
 
                   final unlocked = await _getUnlocked();
 
@@ -1493,6 +2947,38 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
                   final watching = positions.where((p) => p['status'].toString().contains('監控中')).length;
 
                   if (watching >= 3 && !unlocked.contains('tasks_3')) await _unlock('tasks_3');
+
+                  // 檢查記錄達人任務（今日記錄 3 筆以上）
+
+                  final today = DateTime.now();
+
+                  final todayCount = positions.where((p) {
+
+                    final et = p['entryTime'];
+
+                    if (et == null) return false;
+
+                    final d = DateTime.fromMillisecondsSinceEpoch(et is num ? et.toInt() : int.parse(et.toString()));
+
+                    return d.year == today.year && d.month == today.month && d.day == today.day;
+
+                  }).length;
+
+                  if (todayCount >= 3) await _checkDailyTask('record_3');
+
+                  // 檢查每日任務全部完成成就
+
+                  final tasks = await _getDailyTasks();
+
+                  final completed = Set<String>.from((tasks['completed'] as Map? ?? {}).keys.cast<String>());
+
+                  if (completed.length == _dailyTasks.length) {
+
+                    final unlocked = await _getUnlocked();
+
+                    if (!unlocked.contains('daily_all')) await _unlock('daily_all');
+
+                  }
 
                 },
 
@@ -1655,6 +3141,8 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
                     'tp1': toD(cs['tp1']!.text), 'tp2': toD(cs['tp2']!.text), 'tp3': toD(cs['tp3']!.text),
 
                     'sl': toD(cs['sl']!.text), 'status': pos['status'],
+
+                    'side': pos['side'] ?? 'long',
 
                   };
 
