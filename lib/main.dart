@@ -2550,7 +2550,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
       default:
 
-        colors = [const Color(0xFF0D0D0D), const Color(0xFF1a1518), const Color(0xFF15101a), const Color(0xFF0D0D0D)];
+        colors = [const Color(0xFF0D0D0D), const Color(0xFF2d1a28), const Color(0xFF251530), const Color(0xFF1a0d20), const Color(0xFF0D0D0D)];
 
     }
 
