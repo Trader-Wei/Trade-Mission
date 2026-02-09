@@ -1938,7 +1938,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
                   leading: _buildAchievementBadge(id: id, isUnlocked: isUnlocked),
 
-                  title: Text(isUnlocked ? a['title'] as String : '???', style: TextStyle(color: isUnlocked ? Colors.white : Colors.grey, fontSize: 14)),
+                  title: Text(a['title'] as String, style: TextStyle(color: isUnlocked ? Colors.white : Colors.grey, fontSize: 14)),
 
                   subtitle: Text(isUnlocked ? a['desc'] as String : '尚未解鎖', style: const TextStyle(fontSize: 11, color: Colors.grey)),
 
