@@ -2626,7 +2626,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
         children: [
 
-          DynamicBackground(primaryColor: _bgDynamicColor),
+          DynamicBackground(primaryColor: _bgDynamicColor, meteorCount: positions.length),
 
           Container(decoration: BoxDecoration(gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.black.withOpacity(0.25), Colors.black.withOpacity(0.5)]))),
 

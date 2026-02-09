@@ -2,11 +2,13 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
-/// 動態背景：漩渦、六角網格、雷達、電路、數據面板、浮動多邊形、可自訂主色。
+/// 動態背景：銀河系融合、漩渦、流星（依紀錄數）、六角網格、雷達、可自訂主色。
 class DynamicBackground extends StatefulWidget {
-  const DynamicBackground({super.key, this.primaryColor});
+  const DynamicBackground({super.key, this.primaryColor, this.meteorCount = 0});
 
   final Color? primaryColor;
+  /// 流星數量，依任務紀錄筆數（每多一筆紀錄多一顆流星），上限 30。
+  final int meteorCount;
 
   @override
   State<DynamicBackground> createState() => _DynamicBackgroundState();
@@ -34,10 +36,11 @@ class _DynamicBackgroundState extends State<DynamicBackground>
   @override
   Widget build(BuildContext context) {
     final color = widget.primaryColor ?? const Color(0xFF00e5ff);
+    final meteors = widget.meteorCount.clamp(0, 30);
     return AnimatedBuilder(
       animation: _controller,
       builder: (context, _) => CustomPaint(
-        painter: _DynamicBackgroundPainter(t: _controller.value, primaryColor: color),
+        painter: _DynamicBackgroundPainter(t: _controller.value, primaryColor: color, meteorCount: meteors),
         size: Size.infinite,
       ),
     );
@@ -45,10 +48,11 @@ class _DynamicBackgroundState extends State<DynamicBackground>
 }
 
 class _DynamicBackgroundPainter extends CustomPainter {
-  _DynamicBackgroundPainter({required this.t, required this.primaryColor});
+  _DynamicBackgroundPainter({required this.t, required this.primaryColor, this.meteorCount = 0});
 
   final double t;
   final Color primaryColor;
+  final int meteorCount;
 
   late final Color _cyan;
   late final Color _cyanDim;
@@ -71,6 +75,9 @@ class _DynamicBackgroundPainter extends CustomPainter {
   static const int _hexCols = 20;
   static const int _vortexArms = 5;
   static const int _floatingPolyCount = 16;
+  static const int _starCount = 720;
+  static const int _starDustCount = 550;
+  static const int _maxMeteors = 30;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -82,6 +89,13 @@ class _DynamicBackgroundPainter extends CustomPainter {
     final maxDim = math.max(w, h);
 
     _drawBase(canvas, w, h);
+    _drawNebulaBlend(canvas, w, h, cx, cy, maxDim);
+    _drawStarDust(canvas, w, h);
+    _drawStarField(canvas, w, h);
+    _drawGalaxyCore(canvas, cx, cy, maxDim);
+    _drawGalaxyArms(canvas, cx, cy, maxDim);
+    _drawGalaxyDustLanes(canvas, cx, cy, maxDim);
+    _drawGalaxyArmStars(canvas, cx, cy, maxDim);
     _drawHexGrid(canvas, w, h);
     _drawConcentricRings(canvas, cx, cy, maxDim);
     _drawVortex(canvas, cx, cy, maxDim);
@@ -95,6 +109,7 @@ class _DynamicBackgroundPainter extends CustomPainter {
     _drawFloatingPolygons(canvas, w, h, cx, cy);
     _drawParticles(canvas, w, h);
     _drawScanLine(canvas, w, h);
+    _drawMeteors(canvas, w, h);
   }
 
   void _drawBase(Canvas canvas, double w, double h) {
@@ -103,14 +118,231 @@ class _DynamicBackgroundPainter extends CustomPainter {
       begin: Alignment.topLeft,
       end: Alignment.bottomRight,
       colors: [
-        const Color(0xFF020510),
-        const Color(0xFF040a18),
-        const Color(0xFF051025),
-        const Color(0xFF030818),
+        const Color(0xFF010308),
+        const Color(0xFF030612),
+        const Color(0xFF050a1a),
+        const Color(0xFF080818),
+        const Color(0xFF040810),
         const Color(0xFF020508),
       ],
     );
     canvas.drawRect(rect, Paint()..shader = grad.createShader(rect));
+  }
+
+  /// 多色彩暈染：更鮮豔的藍紫粉青星雲狀漸層
+  void _drawNebulaBlend(Canvas canvas, double w, double h, double cx, double cy, double maxDim) {
+    final colors = [
+      const Color(0xFF3a1a5a),
+      const Color(0xFF2a1548),
+      const Color(0xFF1a2568),
+      const Color(0xFF253080),
+      const Color(0xFF1a3070),
+    ];
+    for (int i = 0; i < 5; i++) {
+      final center = Offset(
+        cx + (math.sin(t * 0.5 + i) * 0.15) * w,
+        cy + (math.cos(t * 0.4 + i * 0.7) * 0.12) * h,
+      );
+      final r = maxDim * (0.45 + 0.5 * (i / 5));
+      final grad = RadialGradient(
+        colors: [
+          colors[i].withOpacity(0.42),
+          colors[i].withOpacity(0.18),
+          colors[i].withOpacity(0.05),
+          Colors.transparent,
+        ],
+        stops: const [0.0, 0.4, 0.7, 1.0],
+      );
+      canvas.drawCircle(center, r, Paint()..shader = grad.createShader(Rect.fromCircle(center: center, radius: r)));
+    }
+    final magentaGrad = RadialGradient(
+      colors: [
+        const Color(0xFF8a3a8a).withOpacity(0.35),
+        const Color(0xFF5a2a5a).withOpacity(0.2),
+        const Color(0xFF3a1a4a).withOpacity(0.08),
+        Colors.transparent,
+      ],
+      stops: const [0.0, 0.35, 0.65, 1.0],
+    );
+    canvas.drawCircle(Offset(cx + maxDim * 0.2, cy - maxDim * 0.1), maxDim * 0.65, Paint()..shader = magentaGrad.createShader(Rect.fromCircle(center: Offset(cx + maxDim * 0.2, cy - maxDim * 0.1), radius: maxDim * 0.65)));
+    final tealGrad = RadialGradient(
+      colors: [
+        const Color(0xFF2a9a9a).withOpacity(0.28),
+        const Color(0xFF1a6a6a).withOpacity(0.15),
+        const Color(0xFF0a3a4a).withOpacity(0.05),
+        Colors.transparent,
+      ],
+      stops: const [0.0, 0.4, 0.7, 1.0],
+    );
+    canvas.drawCircle(Offset(cx - maxDim * 0.25, cy + maxDim * 0.15), maxDim * 0.55, Paint()..shader = tealGrad.createShader(Rect.fromCircle(center: Offset(cx - maxDim * 0.25, cy + maxDim * 0.15), radius: maxDim * 0.55)));
+    final blueGrad = RadialGradient(
+      colors: [
+        const Color(0xFF4a6ac8).withOpacity(0.22),
+        const Color(0xFF2a3a88).withOpacity(0.1),
+        Colors.transparent,
+      ],
+      stops: const [0.0, 0.5, 1.0],
+    );
+    canvas.drawCircle(Offset(cx + maxDim * 0.15, cy + maxDim * 0.2), maxDim * 0.5, Paint()..shader = blueGrad.createShader(Rect.fromCircle(center: Offset(cx + maxDim * 0.15, cy + maxDim * 0.2), radius: maxDim * 0.5)));
+  }
+
+  /// 星塵：極細密小點，增加銀河塵埃感
+  void _drawStarDust(Canvas canvas, double w, double h) {
+    for (int i = 0; i < _starDustCount; i++) {
+      final seed = i * 1.314159265358979;
+      final x = (math.sin(seed * 1.5) * 0.5 + 0.5) * (w + 60) - 30;
+      final y = (math.cos(seed * 1.1) * 0.5 + 0.5) * (h + 60) - 30;
+      final twinkle = 0.3 + 0.7 * (0.5 + 0.5 * math.sin(t * 2.5 + seed * 3));
+      final size = 0.25 + 0.6 * (math.sin(seed * 7) * 0.5 + 0.5);
+      final opacity = twinkle * (0.15 + 0.5 * (math.sin(seed * 11) * 0.5 + 0.5));
+      canvas.drawCircle(
+        Offset(x, y),
+        size,
+        Paint()..color = Colors.white.withOpacity(opacity * 0.7),
+      );
+    }
+  }
+
+  /// 銀河星野：密集星點 + 閃爍
+  void _drawStarField(Canvas canvas, double w, double h) {
+    for (int i = 0; i < _starCount; i++) {
+      final seed = i * 1.618033988749895;
+      final x = (math.sin(seed * 1.2) * 0.5 + 0.5) * (w + 40) - 20;
+      final y = (math.cos(seed * 0.8) * 0.5 + 0.5) * (h + 40) - 20;
+      final twinkle = 0.4 + 0.6 * (0.5 + 0.5 * math.sin(t * 3 * math.pi + seed * 4));
+      final size = 0.5 + 1.5 * (math.sin(seed * 3) * 0.5 + 0.5);
+      final opacity = twinkle * (0.35 + 0.65 * (math.sin(seed * 5) * 0.5 + 0.5));
+      canvas.drawCircle(
+        Offset(x, y),
+        size,
+        Paint()..color = Colors.white.withOpacity(opacity * 0.92),
+      );
+    }
+  }
+
+  /// 銀河中心光暈（橢圓膨脹區）+ 多色暈染
+  void _drawGalaxyCore(Canvas canvas, double cx, double cy, double maxDim) {
+    final radiusX = maxDim * 0.55;
+    final radiusY = maxDim * 0.28;
+    final pulse = 0.92 + 0.08 * math.sin(t * 2 * math.pi);
+    canvas.save();
+    canvas.translate(cx, cy);
+    canvas.scale(pulse);
+    final rect = Rect.fromCenter(center: Offset.zero, width: radiusX * 2, height: radiusY * 2);
+    final grad = RadialGradient(
+      colors: [
+        _cyan.withOpacity(0.1),
+        const Color(0xFF3a2a5a).withOpacity(0.06),
+        _cyan.withOpacity(0.03),
+        Colors.transparent,
+      ],
+      stops: const [0.0, 0.35, 0.6, 1.0],
+    );
+    canvas.drawOval(rect, Paint()..shader = grad.createShader(rect));
+    final coreBright = RadialGradient(
+      colors: [
+        const Color(0xFF6a5a8a).withOpacity(0.08),
+        const Color(0xFF2a1a4a).withOpacity(0.03),
+        Colors.transparent,
+      ],
+      stops: const [0.0, 0.5, 1.0],
+    );
+    canvas.drawOval(Rect.fromCenter(center: Offset.zero, width: radiusX, height: radiusY * 0.6), Paint()..shader = coreBright.createShader(Rect.fromCenter(center: Offset.zero, width: radiusX, height: radiusY)));
+    canvas.restore();
+  }
+
+  /// 銀河螺旋臂（多條、與漩渦融合的柔和光帶）
+  void _drawGalaxyArms(Canvas canvas, double cx, double cy, double maxDim) {
+    for (int arm = 0; arm < 4; arm++) {
+      final armOffset = (arm / 4) * 2 * math.pi + t * 0.35;
+      final path = Path();
+      for (int i = 0; i <= 100; i++) {
+        final f = i / 100;
+        final theta = f * 3.5 * 2 * math.pi + armOffset;
+        final r = maxDim * (0.08 + 0.7 * f * (0.75 + 0.25 * math.sin(theta * 2)));
+        final x = cx + r * math.cos(theta);
+        final y = cy + r * math.sin(theta) * 0.45;
+        if (i == 0) path.moveTo(x, y);
+        else path.lineTo(x, y);
+      }
+      final paint = Paint()
+        ..color = (arm % 2 == 0 ? _cyan : const Color(0xFF5a4a8a)).withOpacity(0.07)
+        ..strokeWidth = maxDim * 0.09
+        ..style = PaintingStyle.stroke
+        ..strokeCap = StrokeCap.round;
+      canvas.drawPath(path, paint);
+    }
+  }
+
+  /// 銀河塵埃帶（較暗的弧帶，增加層次）
+  void _drawGalaxyDustLanes(Canvas canvas, double cx, double cy, double maxDim) {
+    for (int lane = 0; lane < 3; lane++) {
+      final path = Path();
+      final offset = (lane / 3) * math.pi * 0.7 + t * 0.2;
+      for (int i = 0; i <= 60; i++) {
+        final f = i / 60;
+        final theta = f * 2 * math.pi + offset;
+        final r = maxDim * (0.2 + 0.55 * f);
+        final x = cx + r * math.cos(theta);
+        final y = cy + r * math.sin(theta) * 0.5;
+        if (i == 0) path.moveTo(x, y);
+        else path.lineTo(x, y);
+      }
+      canvas.drawPath(path, Paint()
+        ..color = Colors.black.withOpacity(0.12)
+        ..strokeWidth = maxDim * 0.06
+        ..style = PaintingStyle.stroke);
+    }
+  }
+
+  /// 螺旋臂上的星點（沿臂分布的亮點）
+  void _drawGalaxyArmStars(Canvas canvas, double cx, double cy, double maxDim) {
+    for (int arm = 0; arm < 4; arm++) {
+      for (int k = 0; k < 35; k++) {
+        final seed = arm * 17 + k * 3.1;
+        final f = (k / 35) * 0.85 + 0.1 * (math.sin(seed) * 0.5 + 0.5);
+        final theta = f * 3 * 2 * math.pi + (arm / 4) * 2 * math.pi + t * 0.4;
+        final r = maxDim * (0.15 + 0.6 * f + 0.05 * math.sin(seed * 2));
+        final x = cx + r * math.cos(theta);
+        final y = cy + r * math.sin(theta) * 0.5;
+        final twinkle = 0.5 + 0.5 * math.sin(t * 4 + seed);
+        final size = 0.8 + 1.5 * (math.sin(seed * 5) * 0.5 + 0.5);
+        canvas.drawCircle(Offset(x, y), size, Paint()..color = Colors.white.withOpacity(0.4 * twinkle));
+      }
+    }
+  }
+
+  /// 星光：散落各處的點點星光，亮度呼吸樣式（每筆紀錄一顆，不流動）
+  void _drawMeteors(Canvas canvas, double w, double h) {
+    if (meteorCount <= 0) return;
+    final count = math.min(meteorCount, _maxMeteors);
+    for (int i = 0; i < count; i++) {
+      final seed = i * 1.618033988749895 + 0.7;
+      final x = (math.sin(seed * 1.3) * 0.5 + 0.5) * (w - 80) + 40;
+      final y = (math.cos(seed * 0.9) * 0.5 + 0.5) * (h - 80) + 40;
+      final phase = i * 0.4;
+      final breath = 0.4 + 0.6 * (0.5 + 0.5 * math.sin(t * 2 * math.pi + phase));
+      final radius = 3.0 + 5.0 * (math.sin(seed * 2) * 0.5 + 0.5);
+      final grad = RadialGradient(
+        colors: [
+          Colors.white.withOpacity((0.9 * breath).clamp(0.0, 1.0)),
+          _electric.withOpacity((0.7 * breath).clamp(0.0, 1.0)),
+          _cyan.withOpacity((0.35 * breath).clamp(0.0, 1.0)),
+          _cyan.withOpacity(0),
+        ],
+        stops: const [0.0, 0.3, 0.6, 1.0],
+      );
+      canvas.drawCircle(
+        Offset(x, y),
+        radius,
+        Paint()..shader = grad.createShader(Rect.fromCircle(center: Offset(x, y), radius: radius)),
+      );
+      canvas.drawCircle(
+        Offset(x, y),
+        radius * 0.35,
+        Paint()..color = Colors.white.withOpacity((0.85 * breath).clamp(0.0, 1.0)),
+      );
+    }
   }
 
   void _drawHexGrid(Canvas canvas, double w, double h) {
@@ -519,5 +751,5 @@ class _DynamicBackgroundPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _DynamicBackgroundPainter oldDelegate) =>
-      oldDelegate.t != t || oldDelegate.primaryColor != primaryColor;
+      oldDelegate.t != t || oldDelegate.primaryColor != primaryColor || oldDelegate.meteorCount != meteorCount;
 }
