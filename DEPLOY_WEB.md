@@ -78,7 +78,10 @@ git push -u origin main
 3. 到 **Settings → Pages**，Source 選 **GitHub Actions**（若還沒選）
 4. 用新網址開網站：`https://你的帳號.github.io/你的倉庫名/`
 
-之後只要在專案裡改完程式、`git add`、`git commit`、`git push origin main`，就會自動部署到這個新 repo 的網站。
+之後有兩種方式更新網站：
+
+- **一鍵同步**：在專案資料夾裡**雙擊 `sync-to-github.bat`**，會自動執行 add、commit、push；推上去後 GitHub Actions 會自動部署，網頁就會更新。
+- **手動指令**：在終端機執行 `git add .` → `git commit -m "說明"` → `git push origin main`。
 
 ---
 

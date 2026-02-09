@@ -225,7 +225,99 @@ const _achievements = [
 
 ];
 
+/// 成就徽章對應的圖示（較精緻的 Material Icons）
+IconData _achievementBadgeIcon(String id) {
 
+  switch (id) {
+
+    case 'first_task': return Icons.eco_rounded;
+
+    case 'first_tp': return Icons.star_rounded;
+
+    case 'first_sl': return Icons.menu_book_rounded;
+
+    case 'tp_5': return Icons.search_rounded;
+
+    case 'tp_10': return Icons.military_tech_rounded;
+
+    case 'tasks_3': return Icons.assignment_rounded;
+
+    case 'level_5': return Icons.spa_rounded;
+
+    case 'level_10': return Icons.park_rounded;
+
+    case 'level_20': return Icons.forest_rounded;
+
+    case 'profit_streak_3': return Icons.local_fire_department_rounded;
+
+    case 'profit_streak_7': return Icons.whatshot_rounded;
+
+    case 'tp_streak_3': return Icons.bolt_rounded;
+
+    case 'tp_streak_5': return Icons.auto_awesome_rounded;
+
+    case 'daily_all': return Icons.track_changes_rounded;
+
+    default: return Icons.emoji_events_rounded;
+
+  }
+
+}
+
+/// 單一成就的精美徽章圖（圓形容器 + 漸層/陰影）
+Widget _buildAchievementBadge({required String id, required bool isUnlocked}) {
+
+  final icon = _achievementBadgeIcon(id);
+
+  return Container(
+
+    width: 44,
+
+    height: 44,
+
+    decoration: BoxDecoration(
+
+      shape: BoxShape.circle,
+
+      boxShadow: [
+
+        BoxShadow(color: Colors.black.withOpacity(0.35), blurRadius: 6, offset: const Offset(0, 2)),
+
+        if (isUnlocked) BoxShadow(color: const Color(0xFFFFD700).withOpacity(0.25), blurRadius: 8, spreadRadius: 0),
+
+      ],
+
+      gradient: isUnlocked
+
+          ? LinearGradient(
+
+              begin: Alignment.topLeft,
+
+              end: Alignment.bottomRight,
+
+              colors: [const Color(0xFFFFD700), const Color(0xFFB8860B), const Color(0xFF8B6914)],
+
+            )
+
+          : null,
+
+      color: isUnlocked ? null : Colors.grey.shade800,
+
+      border: Border.all(
+
+        color: isUnlocked ? const Color(0xFFFFE55C).withOpacity(0.8) : Colors.grey.shade600,
+
+        width: isUnlocked ? 1.5 : 1,
+
+      ),
+
+    ),
+
+    child: Icon(icon, size: 22, color: isUnlocked ? Colors.white : Colors.grey.shade500),
+
+  );
+
+}
 
 const _achievementKey = 'anya_unlocked_achievements';
 
@@ -1842,25 +1934,9 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
                 final isUnlocked = unlocked.contains(id);
 
-                final isTpRelated = id.contains('tp') || id.contains('first_tp');
-
                 return ListTile(
 
-                  leading: Row(
-
-                    mainAxisSize: MainAxisSize.min,
-
-                    children: [
-
-                      Text(isTpRelated ? '⭐' : '⚡', style: const TextStyle(fontSize: 18)),
-
-                      const SizedBox(width: 4),
-
-                      Text(a['emoji'] as String, style: const TextStyle(fontSize: 22)),
-
-                    ],
-
-                  ),
+                  leading: _buildAchievementBadge(id: id, isUnlocked: isUnlocked),
 
                   title: Text(isUnlocked ? a['title'] as String : '???', style: TextStyle(color: isUnlocked ? Colors.white : Colors.grey, fontSize: 14)),
 
