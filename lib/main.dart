@@ -343,6 +343,8 @@ const _bgCustomPathKey = 'anya_bg_custom_path';
 
 const _bgCustomImageBase64Key = 'anya_bg_custom_base64';
 
+const _bgDynamicColorKey = 'anya_bg_dynamic_color';
+
 // 網頁版 base64 儲存上限（字元數），避免超過 localStorage 限制
 const int _kMaxBgBase64Length = 1400000;
 
@@ -884,6 +886,8 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
   String? _bgCustomImageBase64;
 
+  Color _bgDynamicColor = const Color(0xFF00e5ff);
+
   final _secureStorage = const FlutterSecureStorage(aOptions: AndroidOptions(encryptedSharedPreferences: true));
 
 
@@ -956,7 +960,11 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
     final bgCustomBase64 = prefs.getString(_bgCustomImageBase64Key);
 
-    if (mounted) setState(() { _bgMode = bgMode; _bgCustomPath = bgCustomPath; _bgCustomImageBase64 = bgCustomBase64; });
+    final bgDynamicColorValue = prefs.getInt(_bgDynamicColorKey);
+
+    final bgDynamicColor = bgDynamicColorValue != null ? Color(bgDynamicColorValue) : const Color(0xFF00e5ff);
+
+    if (mounted) setState(() { _bgMode = bgMode; _bgCustomPath = bgCustomPath; _bgCustomImageBase64 = bgCustomBase64; _bgDynamicColor = bgDynamicColor; });
 
     _refreshLevelAndStreak();
 
@@ -1427,6 +1435,40 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
               }),
 
+              const Divider(height: 24, color: Colors.grey),
+
+              const Text('動態背景主色', style: TextStyle(fontSize: 12, color: Colors.grey)),
+
+              const SizedBox(height: 8),
+
+              Wrap(
+
+                spacing: 10,
+
+                runSpacing: 8,
+
+                children: [
+
+                  _buildDynamicColorChip(prefs, ctx, const Color(0xFF00e5ff), '青藍'),
+
+                  _buildDynamicColorChip(prefs, ctx, const Color(0xFF00ffea), '電青'),
+
+                  _buildDynamicColorChip(prefs, ctx, const Color(0xFF0088cc), '深藍'),
+
+                  _buildDynamicColorChip(prefs, ctx, const Color(0xFF7b68ee), '紫'),
+
+                  _buildDynamicColorChip(prefs, ctx, const Color(0xFF00ff88), '綠'),
+
+                  _buildDynamicColorChip(prefs, ctx, const Color(0xFFFFC0CB), '粉'),
+
+                  _buildDynamicColorChip(prefs, ctx, const Color(0xFFff6b6b), '紅'),
+
+                  _buildDynamicColorChip(prefs, ctx, const Color(0xFFffd93d), '金'),
+
+                ],
+
+              ),
+
             ],
 
           ),
@@ -1434,6 +1476,52 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
         ),
 
       ),
+
+    );
+
+  }
+
+  Widget _buildDynamicColorChip(SharedPreferences prefs, BuildContext sheetContext, Color color, String label) {
+
+    final selected = _bgDynamicColor.value == color.value;
+
+    return Tooltip(
+
+      message: label,
+
+      child: GestureDetector(
+
+      onTap: () async {
+
+        await prefs.setInt(_bgDynamicColorKey, color.value);
+
+        if (mounted) setState(() { _bgDynamicColor = color; });
+
+      },
+
+      child: Container(
+
+        width: 36,
+
+        height: 36,
+
+        decoration: BoxDecoration(
+
+          color: color,
+
+          shape: BoxShape.circle,
+
+          border: Border.all(color: selected ? Colors.white : color.withOpacity(0.6), width: selected ? 3 : 1),
+
+          boxShadow: [BoxShadow(color: color.withOpacity(0.5), blurRadius: selected ? 8 : 4)],
+
+        ),
+
+        child: selected ? const Icon(Icons.check, color: Colors.white, size: 20) : null,
+
+      ),
+
+    ),
 
     );
 
@@ -2538,7 +2626,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
         children: [
 
-          const DynamicBackground(),
+          DynamicBackground(primaryColor: _bgDynamicColor),
 
           Container(decoration: BoxDecoration(gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.black.withOpacity(0.25), Colors.black.withOpacity(0.5)]))),
 
