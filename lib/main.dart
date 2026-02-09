@@ -16,6 +16,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:syncfusion_flutter_charts/charts.dart';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
+
+import 'package:image_picker/image_picker.dart';
+
+import 'bg_image_loader.dart';
+
 
 
 // 型別轉換工具：防止 Windows 版因為整數/小數不分而崩潰
@@ -328,6 +334,10 @@ const _levelKey = 'anya_level_data';
 const _dailyTasksKey = 'anya_daily_tasks';
 
 const _streakKey = 'anya_streak_data';
+
+const _bgModeKey = 'anya_bg_mode';
+
+const _bgCustomPathKey = 'anya_bg_custom_path';
 
 // --- 等級系統：經驗值計算規則 ---
 
@@ -861,6 +871,10 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
   Map<String, dynamic>? _streakData;
 
+  String _bgMode = 'default';
+
+  String? _bgCustomPath;
+
   final _secureStorage = const FlutterSecureStorage(aOptions: AndroidOptions(encryptedSharedPreferences: true));
 
 
@@ -926,6 +940,12 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
       await _persistPositions();
 
     }
+
+    final bgMode = prefs.getString(_bgModeKey) ?? 'default';
+
+    final bgCustomPath = prefs.getString(_bgCustomPathKey);
+
+    if (mounted) setState(() { _bgMode = bgMode; _bgCustomPath = bgCustomPath; });
 
     _refreshLevelAndStreak();
 
@@ -1257,6 +1277,118 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
         ),
 
       ),
+
+      ),
+
+    );
+
+  }
+
+  void _showBackgroundSettings() async {
+
+    final prefs = await SharedPreferences.getInstance();
+
+    final options = [
+
+      {'id': 'default', 'label': '預設漸層', 'desc': '深色帶淡粉紫'},
+
+      {'id': 'gradient_soft', 'label': '柔和漸層', 'desc': '深藍灰'},
+
+      {'id': 'gradient_midnight', 'label': '午夜藍', 'desc': '藍紫色系'},
+
+      {'id': 'gradient_warm', 'label': '暖色漸層', 'desc': '深褐紅'},
+
+      if (!kIsWeb) {'id': 'custom', 'label': '自訂圖片', 'desc': '從相簿選擇'},
+
+    ];
+
+    if (!mounted) return;
+
+    showModalBottomSheet(
+
+      context: context,
+
+      backgroundColor: const Color(0xFF1A1A1A),
+
+      builder: (ctx) => SafeArea(
+
+        child: Padding(
+
+          padding: const EdgeInsets.all(16),
+
+          child: Column(
+
+            mainAxisSize: MainAxisSize.min,
+
+            crossAxisAlignment: CrossAxisAlignment.start,
+
+            children: [
+
+              const Text('背景設定', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFFFFC0CB))),
+
+              const SizedBox(height: 12),
+
+              ...options.map((o) {
+
+                final id = o['id'] as String;
+
+                final selected = _bgMode == id || (id == 'custom' && _bgMode == 'custom');
+
+                return ListTile(
+
+                  leading: Icon(selected ? Icons.check_circle : Icons.circle_outlined, color: selected ? const Color(0xFFFFC0CB) : Colors.grey, size: 22),
+
+                  title: Text(o['label'] as String, style: TextStyle(color: Colors.white, fontWeight: selected ? FontWeight.bold : null)),
+
+                  subtitle: Text(o['desc'] as String, style: const TextStyle(fontSize: 11, color: Colors.grey)),
+
+                  onTap: () async {
+
+                    if (id == 'custom') {
+
+                      final x = await ImagePicker().pickImage(source: ImageSource.gallery);
+
+                      if (x == null || !mounted) return;
+
+                      final path = await savePickedImageToAppDir(x);
+
+                      if (path == null || !mounted) {
+
+                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('無法儲存圖片'), behavior: SnackBarBehavior.floating));
+
+                        return;
+
+                      }
+
+                      await prefs.setString(_bgModeKey, 'custom');
+
+                      await prefs.setString(_bgCustomPathKey, path);
+
+                      setState(() { _bgMode = 'custom'; _bgCustomPath = path; });
+
+                    } else {
+
+                      await prefs.setString(_bgModeKey, id);
+
+                      if (_bgMode == 'custom') await prefs.remove(_bgCustomPathKey);
+
+                      setState(() { _bgMode = id; _bgCustomPath = null; });
+
+                    }
+
+                    if (ctx.mounted) Navigator.pop(ctx);
+
+                  },
+
+                );
+
+              }),
+
+            ],
+
+          ),
+
+        ),
 
       ),
 
@@ -2304,7 +2436,66 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
   }).toList();
 
+  /// 依目前設定繪製背景（漸層或自訂圖）
+  Widget _buildBackground() {
 
+    if (_bgMode == 'custom' && _bgCustomPath != null && _bgCustomPath!.isNotEmpty) {
+
+      return Stack(
+
+        fit: StackFit.expand,
+
+        children: [
+
+          buildBackgroundImageFromPath(_bgCustomPath!),
+
+          Container(decoration: BoxDecoration(gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.black.withOpacity(0.5), Colors.black.withOpacity(0.75)]))),
+
+        ],
+
+      );
+
+    }
+
+    List<Color> colors;
+
+    switch (_bgMode) {
+
+      case 'gradient_soft':
+
+        colors = [const Color(0xFF1a1a2e), const Color(0xFF16213e), const Color(0xFF0D0D0D)];
+
+        break;
+
+      case 'gradient_midnight':
+
+        colors = [const Color(0xFF0f0c29), const Color(0xFF302b63), const Color(0xFF24243e), const Color(0xFF0D0D0D)];
+
+        break;
+
+      case 'gradient_warm':
+
+        colors = [const Color(0xFF1c0a0a), const Color(0xFF2d1b1b), const Color(0xFF0D0D0D)];
+
+        break;
+
+      default:
+
+        colors = [const Color(0xFF0D0D0D), const Color(0xFF1a1518), const Color(0xFF15101a), const Color(0xFF0D0D0D)];
+
+    }
+
+    return Container(
+
+      decoration: BoxDecoration(
+
+        gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: colors),
+
+      ),
+
+    );
+
+  }
 
   @override
 
@@ -2315,6 +2506,8 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
       length: 2,
 
       child: Scaffold(
+
+        backgroundColor: Colors.transparent,
 
         appBar: AppBar(
 
@@ -2368,6 +2561,16 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
             IconButton(
 
+              icon: const Icon(Icons.wallpaper),
+
+              tooltip: '背景設定',
+
+              onPressed: _showBackgroundSettings,
+
+            ),
+
+            IconButton(
+
               icon: const Icon(Icons.key),
 
               tooltip: 'API 設定 / 同步倉位',
@@ -2392,35 +2595,47 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
         ),
 
-        body: isLoading
+        body: Stack(
 
-            ? const Center(child: CircularProgressIndicator())
+          fit: StackFit.expand,
 
-            : TabBarView(
+          children: [
 
-                children: [
+            _buildBackground(),
 
-                  _listForPositions(_watching, emptyLabel: '尚無監控中的任務', isSettled: false),
+            isLoading
 
-                  Column(
+                ? const Center(child: CircularProgressIndicator())
 
-                    key: ValueKey<String>(_settled.map((p) => '${p['settledAt']}_${p['current']}').join('|')),
+                : TabBarView(
 
                     children: [
 
-                      _buildSettledDailySummary(),
+                      _listForPositions(_watching, emptyLabel: '尚無監控中的任務', isSettled: false),
 
-                      _buildSettledMonthlySummary(),
+                      Column(
 
-                      Expanded(child: _listForPositions(_settled, emptyLabel: '尚無已結算的任務', isSettled: true)),
+                        key: ValueKey<String>(_settled.map((p) => '${p['settledAt']}_${p['current']}').join('|')),
+
+                        children: [
+
+                          _buildSettledDailySummary(),
+
+                          _buildSettledMonthlySummary(),
+
+                          Expanded(child: _listForPositions(_settled, emptyLabel: '尚無已結算的任務', isSettled: true)),
+
+                        ],
+
+                      ),
 
                     ],
 
                   ),
 
-                ],
+          ],
 
-              ),
+        ),
 
         floatingActionButton: FloatingActionButton.extended(
 
@@ -2433,6 +2648,8 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
           backgroundColor: const Color(0xFFFFC0CB),
 
         ),
+
+        floatingActionButtonLocation: FloatingActionButtonLocation.startFloat,
 
       ),
 
@@ -2570,7 +2787,11 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
             onTap: () => _showDetail(pos),
 
-            leading: PopupMenuButton<String>(
+            title: Text("${pos['symbol']} (${pos['leverage']}x) ${_sideLabel(pos)}"),
+
+            subtitle: Text(subtitle, maxLines: 2, overflow: TextOverflow.ellipsis),
+
+            trailing: PopupMenuButton<String>(
 
               icon: const Icon(Icons.more_vert),
 
@@ -2605,10 +2826,6 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
               },
 
             ),
-
-            title: Text("${pos['symbol']} (${pos['leverage']}x) ${_sideLabel(pos)}"),
-
-            subtitle: Text(subtitle, maxLines: 2, overflow: TextOverflow.ellipsis),
 
           ),
 
