@@ -339,6 +339,11 @@ const _bgModeKey = 'anya_bg_mode';
 
 const _bgCustomPathKey = 'anya_bg_custom_path';
 
+const _bgCustomImageBase64Key = 'anya_bg_custom_base64';
+
+// 網頁版 base64 儲存上限（字元數），避免超過 localStorage 限制
+const int _kMaxBgBase64Length = 1400000;
+
 // --- 等級系統：經驗值計算規則 ---
 
 int _calculateExp(Map<String, dynamic> pos) {
@@ -875,6 +880,8 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
   String? _bgCustomPath;
 
+  String? _bgCustomImageBase64;
+
   final _secureStorage = const FlutterSecureStorage(aOptions: AndroidOptions(encryptedSharedPreferences: true));
 
 
@@ -945,7 +952,9 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
     final bgCustomPath = prefs.getString(_bgCustomPathKey);
 
-    if (mounted) setState(() { _bgMode = bgMode; _bgCustomPath = bgCustomPath; });
+    final bgCustomBase64 = prefs.getString(_bgCustomImageBase64Key);
+
+    if (mounted) setState(() { _bgMode = bgMode; _bgCustomPath = bgCustomPath; _bgCustomImageBase64 = bgCustomBase64; });
 
     _refreshLevelAndStreak();
 
@@ -1298,7 +1307,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
       {'id': 'gradient_warm', 'label': '暖色漸層', 'desc': '深褐紅'},
 
-      if (!kIsWeb) {'id': 'custom', 'label': '自訂圖片', 'desc': '從相簿選擇'},
+      {'id': 'custom', 'label': '自訂圖片', 'desc': kIsWeb ? '從本機選擇圖片（網頁版）' : '從相簿選擇'},
 
     ];
 
@@ -1350,29 +1359,59 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
                       if (x == null || !mounted) return;
 
-                      final path = await savePickedImageToAppDir(x);
+                      if (kIsWeb) {
 
-                      if (path == null || !mounted) {
+                        final bytes = await x.readAsBytes();
 
-                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('無法儲存圖片'), behavior: SnackBarBehavior.floating));
+                        final base64 = base64Encode(bytes);
 
-                        return;
+                        if (base64.length > _kMaxBgBase64Length && mounted) {
+
+                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('圖片過大，請選擇較小的圖片（建議 1MB 以內）'), behavior: SnackBarBehavior.floating));
+
+                          return;
+
+                        }
+
+                        await prefs.setString(_bgModeKey, 'custom');
+
+                        await prefs.setString(_bgCustomImageBase64Key, base64);
+
+                        if (mounted) setState(() { _bgMode = 'custom'; _bgCustomPath = null; _bgCustomImageBase64 = base64; });
+
+                      } else {
+
+                        final path = await savePickedImageToAppDir(x);
+
+                        if (path == null || !mounted) {
+
+                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('無法儲存圖片'), behavior: SnackBarBehavior.floating));
+
+                          return;
+
+                        }
+
+                        await prefs.setString(_bgModeKey, 'custom');
+
+                        await prefs.setString(_bgCustomPathKey, path);
+
+                        if (mounted) setState(() { _bgMode = 'custom'; _bgCustomPath = path; _bgCustomImageBase64 = null; });
 
                       }
-
-                      await prefs.setString(_bgModeKey, 'custom');
-
-                      await prefs.setString(_bgCustomPathKey, path);
-
-                      setState(() { _bgMode = 'custom'; _bgCustomPath = path; });
 
                     } else {
 
                       await prefs.setString(_bgModeKey, id);
 
-                      if (_bgMode == 'custom') await prefs.remove(_bgCustomPathKey);
+                      if (_bgMode == 'custom') {
 
-                      setState(() { _bgMode = id; _bgCustomPath = null; });
+                        await prefs.remove(_bgCustomPathKey);
+
+                        await prefs.remove(_bgCustomImageBase64Key);
+
+                      }
+
+                      if (mounted) setState(() { _bgMode = id; _bgCustomPath = null; _bgCustomImageBase64 = null; });
 
                     }
 
@@ -2439,7 +2478,37 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
   /// 依目前設定繪製背景（漸層或自訂圖）
   Widget _buildBackground() {
 
-    if (_bgMode == 'custom' && _bgCustomPath != null && _bgCustomPath!.isNotEmpty) {
+    if (_bgMode == 'custom') {
+
+      Widget imageWidget;
+
+      if (kIsWeb && _bgCustomImageBase64 != null && _bgCustomImageBase64!.isNotEmpty) {
+
+        try {
+
+          imageWidget = Image.memory(
+
+            base64Decode(_bgCustomImageBase64!),
+
+            fit: BoxFit.cover,
+
+          );
+
+        } catch (_) {
+
+          imageWidget = Container(color: const Color(0xFF0D0D0D));
+
+        }
+
+      } else if (_bgCustomPath != null && _bgCustomPath!.isNotEmpty) {
+
+        imageWidget = buildBackgroundImageFromPath(_bgCustomPath!);
+
+      } else {
+
+        imageWidget = Container(color: const Color(0xFF0D0D0D));
+
+      }
 
       return Stack(
 
@@ -2447,7 +2516,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
         children: [
 
-          buildBackgroundImageFromPath(_bgCustomPath!),
+          imageWidget,
 
           Container(decoration: BoxDecoration(gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.black.withOpacity(0.5), Colors.black.withOpacity(0.75)]))),
 
