@@ -3696,7 +3696,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
       Text("$symbol $interval K線${pos['candles'] != null && (pos['candles'] as List).isNotEmpty ? '（Close snapshot）' : ''}", style: const TextStyle(color: Color(0xFFFFC0CB), fontSize: 20)),
 
-      Expanded(flex: shrinkChart ? 3 : 4, child: SfCartesianChart(
+      Expanded(flex: shrinkChart ? 2 : 3, child: SfCartesianChart(
 
         primaryXAxis: axis,
 
@@ -3728,7 +3728,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
       shrinkChart
           ? Expanded(
-              flex: 1,
+              flex: 2,
               child: ConstrainedBox(
                 constraints: const BoxConstraints(minHeight: 200),
                 child: Scrollbar(
@@ -3752,7 +3752,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
               ),
             )
           : SizedBox(
-              height: 140,
+              height: 180,
               child: Scrollbar(
                 thumbVisibility: true,
                 child: SingleChildScrollView(
@@ -4473,7 +4473,7 @@ class _DetailChartLiveState extends State<_DetailChartLive> {
 
       Text("${widget.symbol} ${widget.interval} K線", style: const TextStyle(color: Color(0xFFFFC0CB), fontSize: 20)),
 
-      Expanded(flex: widget.shrinkChartHeight ? 3 : 4, child: SfCartesianChart(
+      Expanded(flex: widget.shrinkChartHeight ? 2 : 3, child: SfCartesianChart(
 
         primaryXAxis: _dateTimeAxisForInterval(widget.interval),
 
@@ -4505,7 +4505,7 @@ class _DetailChartLiveState extends State<_DetailChartLive> {
 
       widget.shrinkChartHeight
           ? Expanded(
-              flex: 1,
+              flex: 2,
               child: ConstrainedBox(
                 constraints: const BoxConstraints(minHeight: 200),
                 child: Scrollbar(
@@ -4528,7 +4528,7 @@ class _DetailChartLiveState extends State<_DetailChartLive> {
               ),
             )
           : SizedBox(
-              height: 140,
+              height: 180,
               child: Scrollbar(
                 thumbVisibility: true,
                 child: SingleChildScrollView(
@@ -4538,10 +4538,10 @@ class _DetailChartLiveState extends State<_DetailChartLive> {
                     children: [
                       const Divider(),
                       Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 8),
-                        child: _chartOiGrid(widget.oiPeriods, oiChanges, isPortrait: widget.isPortrait),
-                      ),
-                      _chartPositionSummary(pos, isPortrait: widget.isPortrait),
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          child: _chartOiGrid(widget.oiPeriods, oiChanges, isPortrait: widget.isPortrait),
+                        ),
+                        _chartPositionSummary(pos, isPortrait: widget.isPortrait),
                     ],
                   ),
                 ),
