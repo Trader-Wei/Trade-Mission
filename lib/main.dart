@@ -33,6 +33,21 @@ double toD(dynamic v) => (v is num) ? v.toDouble() : (double.tryParse(v.toString
 /// 網頁版因 CORS 無法直接請求交易所 API，需透過代理轉發
 String _webProxyUrl(String url) => kIsWeb ? 'https://api.cors.lol/?url=${Uri.encodeComponent(url)}' : url;
 
+/// 網頁版認證 API 需透過自訂代理（可轉發 Header），proxyUrl 為 Cloudflare Worker 等
+Future<http.Response> _webFetchWithAuth(String url, Map<String, String> headers, {String? proxyUrl}) async {
+  if (kIsWeb && proxyUrl != null && proxyUrl.trim().isNotEmpty) {
+    final proxy = proxyUrl.trim().replaceAll(RegExp(r'/$'), '');
+    final res = await http.post(
+      Uri.parse(proxy),
+      headers: {'Content-Type': 'application/json'},
+      body: json.encode({'url': url, 'headers': headers}),
+    );
+    if (res.statusCode == 200) return res;
+    return http.Response(res.body, res.statusCode);
+  }
+  return http.get(Uri.parse(url), headers: headers);
+}
+
 
 
 String _fmtEntryTime(dynamic ms) {
@@ -78,13 +93,15 @@ String _sideLabel(Map<String, dynamic> p) =>
 
 double _pnlAmount(Map<String, dynamic> p) {
 
+  if (p['realizedPnl'] != null) return toD(p['realizedPnl']);
+
   final u = toD(p['uValue']);
 
   final ent = toD(p['entry']);
 
   final cur = toD(p['current']);
 
-  final lev = (p['leverage'] as num).toInt();
+  final lev = (p['leverage'] is num) ? (p['leverage'] as num).toInt() : 1;
 
   if (ent == 0) return 0;
 
@@ -553,6 +570,8 @@ const _apiKeyStorageKey = 'anya_api_key';
 
 const _apiSecretStorageKey = 'anya_api_secret';
 
+const _apiProxyUrlKey = 'anya_api_proxy_url';
+
 /// 支援的交易所列舉，value 為下拉顯示名稱
 
 const Map<String, String> kSupportedExchanges = {
@@ -584,8 +603,7 @@ String _binanceSignature(String secret, String queryString) {
 }
 
 /// 呼叫 Binance GET /fapi/v2/positionRisk，回傳 list 或 null（失敗時）
-
-Future<List<dynamic>?> _fetchBinancePositionRisk(String apiKey, String apiSecret) async {
+Future<List<dynamic>?> _fetchBinancePositionRisk(String apiKey, String apiSecret, {String? proxyUrl}) async {
 
   try {
 
@@ -597,9 +615,13 @@ Future<List<dynamic>?> _fetchBinancePositionRisk(String apiKey, String apiSecret
 
     final signature = _binanceSignature(apiSecret, query);
 
-    final uri = Uri.parse(_webProxyUrl('$baseUrl/fapi/v2/positionRisk?$query&signature=$signature'));
+    final url = '$baseUrl/fapi/v2/positionRisk?$query&signature=$signature';
 
-    final res = await http.get(uri, headers: {'X-MBX-APIKEY': apiKey});
+    final res = kIsWeb && proxyUrl != null && proxyUrl.isNotEmpty
+
+        ? await _webFetchWithAuth(url, {'X-MBX-APIKEY': apiKey}, proxyUrl: proxyUrl)
+
+        : await http.get(Uri.parse(kIsWeb ? _webProxyUrl(url) : url), headers: {'X-MBX-APIKEY': apiKey});
 
     if (res.statusCode != 200) return null;
 
@@ -631,7 +653,7 @@ String _bittapSign(String secret, String signData) {
 }
 
 /// BitTap (bittap.com) 合約持倉 API，依 developers.bittap.com 鑑權認證
-Future<List<dynamic>?> _fetchBittapPositions(String apiKey, String apiSecret) async {
+Future<List<dynamic>?> _fetchBittapPositions(String apiKey, String apiSecret, {String? proxyUrl}) async {
 
   try {
 
@@ -645,21 +667,15 @@ Future<List<dynamic>?> _fetchBittapPositions(String apiKey, String apiSecret) as
 
     final signature = _bittapSign(apiSecret, signData);
 
-    final uri = Uri.parse(_webProxyUrl('$baseUrl/api/v1/futures/position/list'));
+    final url = '$baseUrl/api/v1/futures/position/list';
 
-    final res = await http.get(uri, headers: {
+    final headers = {'X-BT-APIKEY': apiKey, 'X-BT-SIGN': signature, 'X-BT-TS': ts, 'X-BT-NONCE': nonce, 'Content-Type': 'application/json'};
 
-      'X-BT-APIKEY': apiKey,
+    final res = kIsWeb && proxyUrl != null && proxyUrl.isNotEmpty
 
-      'X-BT-SIGN': signature,
+        ? await _webFetchWithAuth(url, headers, proxyUrl: proxyUrl)
 
-      'X-BT-TS': ts,
-
-      'X-BT-NONCE': nonce,
-
-      'Content-Type': 'application/json',
-
-    });
+        : await http.get(Uri.parse(kIsWeb ? _webProxyUrl(url) : url), headers: headers);
 
     if (res.statusCode != 200) return null;
 
@@ -755,7 +771,7 @@ String _bingxSign(String secret, String queryString) {
 }
 
 /// BingX 合約持倉 API：/openApi/swap/v2/user/positions
-Future<List<dynamic>?> _fetchBingxPositions(String apiKey, String apiSecret) async {
+Future<List<dynamic>?> _fetchBingxPositions(String apiKey, String apiSecret, {String? proxyUrl}) async {
 
   try {
 
@@ -767,15 +783,15 @@ Future<List<dynamic>?> _fetchBingxPositions(String apiKey, String apiSecret) asy
 
     final signature = _bingxSign(apiSecret, query);
 
-    final uri = Uri.parse(_webProxyUrl('$baseUrl/openApi/swap/v2/user/positions?$query&signature=$signature'));
+    final url = '$baseUrl/openApi/swap/v2/user/positions?$query&signature=$signature';
 
-    final res = await http.get(uri, headers: {
+    final headers = {'X-BX-APIKEY': apiKey, 'X-BX-SIGN': signature};
 
-      'X-BX-APIKEY': apiKey,
+    final res = kIsWeb && proxyUrl != null && proxyUrl.isNotEmpty
 
-      'X-BX-SIGN': signature,
+        ? await _webFetchWithAuth(url, headers, proxyUrl: proxyUrl)
 
-    });
+        : await http.get(Uri.parse(kIsWeb ? _webProxyUrl(url) : url), headers: headers);
 
     if (res.statusCode != 200) return null;
 
@@ -836,6 +852,92 @@ Future<List<dynamic>?> _fetchBingxPositions(String apiKey, String apiSecret) asy
     }
 
     return out;
+
+  } catch (_) {
+
+    return null;
+
+  }
+
+}
+
+/// BingX 倉位歷史：/openApi/swap/v2/user/positionHistory（若 API 存在），用於補錄最近一天已平倉
+Future<List<dynamic>?> _fetchBingxPositionHistory(String apiKey, String apiSecret, int startTimeMs, int endTimeMs, {String? proxyUrl}) async {
+
+  try {
+
+    const baseUrl = 'https://open-api.bingx.com';
+
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+
+    final query = 'endTime=$endTimeMs&limit=1000&startTime=$startTimeMs&timestamp=$timestamp';
+
+    final signature = _bingxSign(apiSecret, query);
+
+    final url = '$baseUrl/openApi/swap/v2/user/positionHistory?$query&signature=$signature';
+
+    final headers = {'X-BX-APIKEY': apiKey, 'X-BX-SIGN': signature};
+
+    final res = kIsWeb && proxyUrl != null && proxyUrl.isNotEmpty
+
+        ? await _webFetchWithAuth(url, headers, proxyUrl: proxyUrl)
+
+        : await http.get(Uri.parse(kIsWeb ? _webProxyUrl(url) : url), headers: headers);
+
+    if (res.statusCode != 200) return null;
+
+    final body = json.decode(res.body);
+
+    if (body is! Map) return null;
+
+    final code = body['code'];
+
+    if (code != 0 && code != '0') return null;
+
+    return body['data'] as List? ?? [];
+
+  } catch (_) {
+
+    return null;
+
+  }
+
+}
+
+/// BingX 盈虧流水：/openApi/swap/v2/user/income，用於補錄已平倉紀錄（最近 N 天）
+Future<List<dynamic>?> _fetchBingxIncome(String apiKey, String apiSecret, int startTimeMs, int endTimeMs, {String? proxyUrl}) async {
+
+  try {
+
+    const baseUrl = 'https://open-api.bingx.com';
+
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+
+    final query = 'endTime=$endTimeMs&limit=1000&startTime=$startTimeMs&timestamp=$timestamp';
+
+    final signature = _bingxSign(apiSecret, query);
+
+    final url = '$baseUrl/openApi/swap/v2/user/income?$query&signature=$signature';
+
+    final headers = {'X-BX-APIKEY': apiKey, 'X-BX-SIGN': signature};
+
+    final res = kIsWeb && proxyUrl != null && proxyUrl.isNotEmpty
+
+        ? await _webFetchWithAuth(url, headers, proxyUrl: proxyUrl)
+
+        : await http.get(Uri.parse(kIsWeb ? _webProxyUrl(url) : url), headers: headers);
+
+    if (res.statusCode != 200) return null;
+
+    final body = json.decode(res.body);
+
+    if (body is! Map) return null;
+
+    final code = body['code'];
+
+    if (code != 0 && code != '0') return null;
+
+    return body['data'] as List? ?? [];
 
   } catch (_) {
 
@@ -1271,6 +1373,12 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
     setState(() => isLoading = false);
 
+    _backfillFromBingxPositionHistory().then((added) {
+
+      if (mounted && added > 0) setState(() {});
+
+    });
+
     _timer = Timer.periodic(const Duration(seconds: 5), (t) => _refresh());
 
     _syncTimer = Timer.periodic(const Duration(seconds: 2), (_) {
@@ -1323,6 +1431,14 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
   Future<String?> _getApiSecret() => _secureStorage.read(key: _apiSecretStorageKey);
 
+  Future<String?> _getApiProxyUrl() async {
+
+    final prefs = await SharedPreferences.getInstance();
+
+    return prefs.getString(_apiProxyUrlKey);
+
+  }
+
   Future<void> _setApiCredentials(String exchange, String key, String secret) async {
 
     await _secureStorage.write(key: _apiExchangeKey, value: exchange);
@@ -1333,6 +1449,22 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
   }
 
+  Future<void> _setApiProxyUrl(String url) async {
+
+    final prefs = await SharedPreferences.getInstance();
+
+    if (url.trim().isEmpty) {
+
+      await prefs.remove(_apiProxyUrlKey);
+
+    } else {
+
+      await prefs.setString(_apiProxyUrlKey, url.trim());
+
+    }
+
+  }
+
   Future<void> _clearApiCredentials() async {
 
     await _secureStorage.delete(key: _apiExchangeKey);
@@ -1340,6 +1472,160 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
     await _secureStorage.delete(key: _apiKeyStorageKey);
 
     await _secureStorage.delete(key: _apiSecretStorageKey);
+
+  }
+
+  /// 從 BingX 倉位歷史補錄最近 1 天遺漏的已平倉紀錄；若無倉位歷史 API 則改以盈虧流水補
+  Future<int> _backfillFromBingxPositionHistory() async {
+
+    final exchange = await _getApiExchange();
+
+    if (exchange != 'bingx') return 0;
+
+    final apiKey = await _getApiKey();
+
+    final apiSecret = await _getApiSecret();
+
+    if (apiKey == null || apiSecret == null || apiKey.isEmpty || apiSecret.isEmpty) return 0;
+
+    final now = DateTime.now();
+
+    final endMs = now.millisecondsSinceEpoch;
+
+    final startMs = endMs - 24 * 60 * 60 * 1000;
+
+    final proxyUrl = kIsWeb ? await _getApiProxyUrl() : null;
+
+    List<dynamic>? list = await _fetchBingxPositionHistory(apiKey, apiSecret, startMs, endMs, proxyUrl: proxyUrl);
+
+    final bool fromIncome = list == null || list.isEmpty;
+
+    if (fromIncome) list = await _fetchBingxIncome(apiKey, apiSecret, startMs, endMs, proxyUrl: proxyUrl);
+
+    if (list == null || list.isEmpty) return 0;
+
+    int added = 0;
+
+    for (final raw in list) {
+
+      final m = raw is Map ? raw as Map : null;
+
+      if (m == null) continue;
+
+      String symbolRaw;
+
+      double income;
+
+      int? timeMs;
+
+      if (fromIncome) {
+
+        final incomeType = (m['incomeType'] ?? m['type'] ?? '').toString();
+
+        if (incomeType != 'REALIZED_PNL' && incomeType != 'TRADE' && incomeType.isNotEmpty && incomeType != 'realized_pnl') continue;
+
+        symbolRaw = (m['symbol'] ?? '').toString();
+
+        income = toD(m['income'] ?? m['amount'] ?? 0);
+
+        timeMs = m['time'] is num ? (m['time'] as num).toInt() : int.tryParse(m['time']?.toString() ?? '');
+
+      } else {
+
+        symbolRaw = (m['symbol'] ?? '').toString();
+
+        income = toD(m['realizedPnl'] ?? m['realized_pnl'] ?? m['pnl'] ?? m['income'] ?? m['amount'] ?? 0);
+
+        final ct = m['closeTime'] ?? m['time'];
+        timeMs = ct is num ? ct.toInt() : int.tryParse(ct?.toString() ?? '');
+
+      }
+
+      if (symbolRaw.isEmpty) continue;
+
+      final symbol = symbolRaw.replaceAll('-', '');
+
+      if (timeMs == null || timeMs <= 0) continue;
+
+      final int settledAtMs = timeMs;
+
+      final existing = positions.where((p) {
+
+        if (p is! Map) return false;
+
+        if ((p['symbol'] ?? '').toString() != symbol) return false;
+
+        final s = p['status']?.toString() ?? '';
+
+        if (!s.contains('完全平倉') && !s.contains('部分平倉') && !s.contains('止盈') && !s.contains('止損') && !s.contains('手動出場')) return false;
+
+        final settled = p['settledAt'];
+
+        if (settled == null) return false;
+
+        final settledMs = settled is num ? settled.toInt() : int.tryParse(settled.toString());
+
+        if (settledMs == null) return false;
+
+        return (settledMs - settledAtMs).abs() < 120000;
+
+      }).isNotEmpty;
+
+      if (existing) continue;
+
+      final leverage = (m['leverage'] is num) ? (m['leverage'] as num).toInt() : int.tryParse(m['leverage']?.toString() ?? '') ?? 20;
+      final levNum = leverage < 1 ? 20 : leverage;
+      double notional = toD(m['notional'] ?? m['notionalValue'] ?? m['positionValue']);
+      if (notional <= 0) {
+        final amt = toD(m['positionAmt'] ?? m['position_amt'] ?? m['size'] ?? m['amount']);
+        final entryPrice = toD(m['entryPrice'] ?? m['avgPrice'] ?? m['openPrice'] ?? m['entry_price']);
+        if (amt != 0 && entryPrice > 0) notional = amt.abs() * entryPrice;
+      }
+      final uValue = notional > 0 ? notional / levNum : 0.0;
+
+      positions.add({
+
+        'symbol': symbol,
+
+        'leverage': levNum,
+
+        'uValue': uValue,
+
+        'entry': 0.0,
+
+        'current': 0.0,
+
+        'entryTime': settledAtMs - 3600000,
+
+        'settledAt': settledAtMs,
+
+        'tp1': 0.0,
+
+        'tp2': 0.0,
+
+        'tp3': 0.0,
+
+        'sl': 0.0,
+
+        'status': '完全平倉',
+
+        'side': 'long',
+
+        'manualEntry': false,
+
+        'realizedPnl': income,
+
+        'source': 'api_backfill',
+
+      });
+
+      added++;
+
+    }
+
+    if (added > 0) await _persistPositions();
+
+    return added;
 
   }
 
@@ -1358,19 +1644,21 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
     }
 
+    final proxyUrl = kIsWeb ? await _getApiProxyUrl() : null;
+
     List<dynamic>? list;
 
     if (exchange == 'binance') {
 
-      list = await _fetchBinancePositionRisk(apiKey, apiSecret);
+      list = await _fetchBinancePositionRisk(apiKey, apiSecret, proxyUrl: proxyUrl);
 
     } else if (exchange == 'bingx') {
 
-      list = await _fetchBingxPositions(apiKey, apiSecret);
+      list = await _fetchBingxPositions(apiKey, apiSecret, proxyUrl: proxyUrl);
 
     } else if (exchange == 'bittap') {
 
-      list = await _fetchBittapPositions(apiKey, apiSecret);
+      list = await _fetchBittapPositions(apiKey, apiSecret, proxyUrl: proxyUrl);
 
     } else {
 
@@ -1530,6 +1818,74 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
     }
 
+    if (exchange == 'bingx' && closedPositions.isNotEmpty) {
+
+      final endMs = DateTime.now().millisecondsSinceEpoch;
+
+      final startMs = endMs - 24 * 60 * 60 * 1000;
+
+      final incomeList = await _fetchBingxIncome(apiKey, apiSecret, startMs, endMs, proxyUrl: proxyUrl);
+
+      if (incomeList != null && incomeList.isNotEmpty) {
+
+        final bySymbol = <String, int>{};
+
+        for (final raw in incomeList) {
+
+          final m = raw is Map ? raw as Map : null;
+
+          if (m == null) continue;
+
+          final incomeType = (m['incomeType'] ?? m['type'] ?? '').toString();
+
+          if (incomeType != 'REALIZED_PNL' && incomeType != 'TRADE' && incomeType.isNotEmpty && incomeType != 'realized_pnl') continue;
+
+          final symbolRaw = (m['symbol'] ?? '').toString();
+
+          if (symbolRaw.isEmpty) continue;
+
+          final symbol = symbolRaw.replaceAll('-', '');
+
+          final timeMs = m['time'] is num ? (m['time'] as num).toInt() : int.tryParse(m['time']?.toString() ?? '');
+
+          if (timeMs == null || timeMs <= 0) continue;
+
+          final prev = bySymbol[symbol];
+
+          if (prev == null || timeMs > prev) bySymbol[symbol] = timeMs;
+
+        }
+
+        final nowMs = DateTime.now().millisecondsSinceEpoch;
+
+        for (final p in positions) {
+
+          if (p is! Map) continue;
+
+          if ((p['status'] ?? '').toString() != '完全平倉') continue;
+
+          final symbol = (p['symbol'] ?? '').toString();
+
+          if (symbol.isEmpty) continue;
+
+          final settled = p['settledAt'];
+
+          if (settled == null) continue;
+
+          final settledMs = settled is num ? settled.toInt() : int.tryParse(settled.toString());
+
+          if (settledMs == null || nowMs - settledMs > 120000) continue;
+
+          final incomeTime = bySymbol[symbol];
+
+          if (incomeTime != null) p['settledAt'] = incomeTime;
+
+        }
+
+      }
+
+    }
+
     if (closedPositions.isNotEmpty) {
 
       await _persistPositions();
@@ -1684,6 +2040,180 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
   }
 
+  void _showBatchDelete() {
+
+    final settledList = _settled;
+
+    if (settledList.isEmpty) {
+
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('尚無已結算的紀錄可刪除'), behavior: SnackBarBehavior.floating));
+
+      return;
+
+    }
+
+    final selected = <int>{};
+
+    showModalBottomSheet(
+
+      context: context,
+
+      isScrollControlled: true,
+
+      backgroundColor: const Color(0xFF1A1A1A),
+
+      builder: (ctx) => StatefulBuilder(
+
+        builder: (context, setModalState) {
+
+          return DraggableScrollableSheet(
+
+            initialChildSize: 0.6,
+
+            minChildSize: 0.3,
+
+            maxChildSize: 0.95,
+
+            expand: false,
+
+            builder: (context, scrollCtrl) => Padding(
+
+              padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+
+              child: Column(
+
+                mainAxisSize: MainAxisSize.min,
+
+                children: [
+
+                  Padding(
+
+                    padding: const EdgeInsets.all(16),
+
+                    child: Row(
+
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+
+                      children: [
+
+                        Text('批量刪除紀錄 (${settledList.length} 筆)', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFFFFC0CB))),
+
+                        Row(
+
+                          children: [
+
+                            TextButton(onPressed: () { selected.addAll(List.generate(settledList.length, (i) => i)); setModalState(() {}); }, child: const Text('全選')),
+
+                            TextButton(onPressed: () { selected.clear(); setModalState(() {}); }, child: const Text('取消全選')),
+
+                          ],
+
+                        ),
+
+                      ],
+
+                    ),
+
+                  ),
+
+                  const Divider(),
+
+                  Expanded(
+
+                    child: ListView.builder(
+
+                      controller: scrollCtrl,
+
+                      itemCount: settledList.length,
+
+                      itemBuilder: (ctx, i) {
+
+                        final pos = settledList[i];
+
+                        if (pos is! Map) return const SizedBox.shrink();
+
+                        final sym = (pos['symbol'] ?? '').toString();
+
+                        final status = pos['status']?.toString() ?? '';
+
+                        final pnl = _pnlAmount(Map<String, dynamic>.from(pos));
+
+                        return CheckboxListTile(
+
+                          value: selected.contains(i),
+
+                          onChanged: (v) { if (v == true) selected.add(i); else selected.remove(i); setModalState(() {}); },
+
+                          title: Text('$sym (${pos['leverage']}x) ${_sideLabel(Map<String, dynamic>.from(pos))}', style: const TextStyle(fontSize: 14)),
+
+                          subtitle: Text('$status · ${pnl >= 0 ? '+' : ''}${pnl.toStringAsFixed(2)} U', style: const TextStyle(fontSize: 11, color: Colors.grey)),
+
+                          activeColor: const Color(0xFFFFC0CB),
+
+                        );
+
+                      },
+
+                    ),
+
+                  ),
+
+                  Padding(
+
+                    padding: const EdgeInsets.all(16),
+
+                    child: SizedBox(
+
+                      width: double.infinity,
+
+                      child: FilledButton.icon(
+
+                        icon: const Icon(Icons.delete_outline),
+
+                        label: Text('刪除選中 (${selected.length})'),
+
+                        style: FilledButton.styleFrom(backgroundColor: Colors.red.shade700),
+
+                        onPressed: selected.isEmpty ? null : () async {
+
+                          final toRemove = selected.toList()..sort((a, b) => b.compareTo(a));
+
+                          for (final i in toRemove) positions.remove(settledList[i]);
+
+                          await _persistPositions();
+
+                          if (!ctx.mounted) return;
+
+                          Navigator.pop(ctx);
+
+                          setState(() {});
+
+                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已刪除 ${toRemove.length} 筆紀錄'), behavior: SnackBarBehavior.floating));
+
+                        },
+
+                      ),
+
+                    ),
+
+                  ),
+
+                ],
+
+              ),
+
+            ),
+
+          );
+
+        },
+
+      ),
+
+    );
+
+  }
+
   void _showApiSettings() async {
 
     final savedExchange = await _getApiExchange();
@@ -1691,6 +2221,8 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
     final keyController = TextEditingController(text: await _getApiKey() ?? '');
 
     final secretController = TextEditingController(text: await _getApiSecret() ?? '');
+
+    final proxyController = TextEditingController(text: await _getApiProxyUrl() ?? '');
 
     String selectedExchange = savedExchange ?? 'binance';
 
@@ -1725,7 +2257,16 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
                 const SizedBox(height: 8),
 
                 const Text('用於自動讀取當前持倉並建立監控任務。請使用僅具「讀取」權限的 API，勿勾選提現與交易。', style: TextStyle(fontSize: 11, color: Colors.grey)),
-                if (kIsWeb) const Padding(padding: EdgeInsets.only(top: 6), child: Text('網頁版已透過 CORS 代理連線；若持倉同步失敗，請改用桌面版或手機版。', style: TextStyle(fontSize: 10, color: Colors.orangeAccent))),
+                if (kIsWeb) Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('網頁版需設定自訂代理才能取得倉位（公開 API 如 K 線則不需）。', style: TextStyle(fontSize: 10, color: Colors.orangeAccent)),
+                      const Text('請部署 cloudflare-worker/proxy.js 至 Cloudflare Workers，再將 Worker URL 填於下方。', style: TextStyle(fontSize: 9, color: Colors.grey)),
+                    ],
+                  ),
+                ),
 
                 const SizedBox(height: 16),
 
@@ -1771,6 +2312,22 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
                 ),
 
+                if (kIsWeb) ...[
+
+                  const SizedBox(height: 12),
+
+                  TextField(
+
+                    controller: proxyController,
+
+                    decoration: const InputDecoration(labelText: 'Proxy URL（網頁版必填，如 https://xxx.workers.dev）', border: OutlineInputBorder(), hintText: 'Cloudflare Worker URL'),
+
+                    keyboardType: TextInputType.url,
+
+                  ),
+
+                ],
+
                 const SizedBox(height: 20),
 
                 Row(
@@ -1788,6 +2345,8 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
                         onPressed: () async {
 
                           await _setApiCredentials(selectedExchange, keyController.text.trim(), secretController.text);
+
+                          if (kIsWeb) await _setApiProxyUrl(proxyController.text.trim());
 
                           if (!ctx.mounted) return;
 
@@ -1816,6 +2375,8 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
                         onPressed: () async {
 
                           await _setApiCredentials(selectedExchange, keyController.text.trim(), secretController.text);
+
+                          if (kIsWeb) await _setApiProxyUrl(proxyController.text.trim());
 
                           Navigator.pop(ctx);
 
@@ -3415,6 +3976,16 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
             ),
 
+            IconButton(
+
+              icon: const Icon(Icons.delete_sweep),
+
+              tooltip: '批量刪除紀錄',
+
+              onPressed: _showBatchDelete,
+
+            ),
+
           ],
 
           bottom: const TabBar(
@@ -3896,7 +4467,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
         _chartBox("槓桿", "${pos['leverage']}x"),
 
-        _chartBox("價值", "${pos['uValue']}U"),
+        _chartBox("保證金", "${pos['uValue']}U"),
 
         _chartBox("進場時間", _fmtEntryTime(pos['entryTime'])),
 
