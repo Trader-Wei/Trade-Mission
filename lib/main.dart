@@ -30,7 +30,8 @@ import 'dynamic_background.dart';
 
 double toD(dynamic v) => (v is num) ? v.toDouble() : (double.tryParse(v.toString()) ?? 0.0);
 
-/// 網頁版因 CORS 無法直接請求交易所 API，需透過代理轉發
+/// 網頁版因 CORS 無法直接請求交易所 API，需透過代理轉發。
+/// 預設使用 api.cors.lol，易因限流或故障導致 K 線／OI 載入失敗；在設定中填寫自訂 Proxy（如 Cloudflare Worker）後會改走 Proxy，較穩定。
 String _webProxyUrl(String url) => kIsWeb ? 'https://api.cors.lol/?url=${Uri.encodeComponent(url)}' : url;
 
 /// 網頁版認證 API 需透過自訂代理（可轉發 Header），proxyUrl 為 Cloudflare Worker 等
@@ -949,19 +950,21 @@ Future<List<dynamic>?> _fetchBingxIncome(String apiKey, String apiSecret, int st
 
 /// 取得指定週期的 OI 變動百分比（最近一期），失敗或資料不足回傳 null
 
-Future<double?> _fetchOiChange(String symbol, String period) async {
+Future<double?> _fetchOiChange(String symbol, String period, [String? proxyUrl]) async {
 
   try {
 
-    final res = await http.get(Uri.parse(_webProxyUrl(
-
-      'https://fapi.binance.com/futures/data/openInterestHist?symbol=$symbol&period=$period&limit=2',
-
-    )));
-
+    final url = 'https://fapi.binance.com/futures/data/openInterestHist?symbol=$symbol&period=$period&limit=2';
+    final http.Response res;
+    if (kIsWeb && proxyUrl != null && proxyUrl.trim().isNotEmpty) {
+      final proxy = proxyUrl.trim().replaceAll(RegExp(r'/$'), '');
+      res = await http.post(Uri.parse(proxy), headers: {'Content-Type': 'application/json'}, body: json.encode({'url': url, 'headers': <String, String>{}}));
+    } else {
+      res = await http.get(Uri.parse(_webProxyUrl(url)));
+    }
     if (res.statusCode != 200) return null;
-
-    final list = json.decode(res.body) as List;
+    final list = json.decode(res.body);
+    if (list is! List) return null;
 
     if (list.length < 2) return null;
 
@@ -1065,16 +1068,28 @@ class Candle {
 
 const List<String> _klineIntervals = ['15m', '1h', '4h'];
 
-Future<List<Candle>> _fetchKlines(String symbol, [String interval = '15m']) async {
+/// K 線來源：Binance fapi。網頁版預設走 api.cors.lol，易失敗；若有設定自訂 Proxy 則改走 Proxy。
+Future<List<Candle>> _fetchKlines(String symbol, [String interval = '15m', String? proxyUrl]) async {
 
   try {
 
-    final res = await http.get(Uri.parse(_webProxyUrl('https://fapi.binance.com/fapi/v1/klines?symbol=$symbol&interval=$interval&limit=40')));
+    final url = 'https://fapi.binance.com/fapi/v1/klines?symbol=$symbol&interval=$interval&limit=40';
+
+    final http.Response res;
+
+    if (kIsWeb && proxyUrl != null && proxyUrl.trim().isNotEmpty) {
+
+      final proxy = proxyUrl.trim().replaceAll(RegExp(r'/$'), '');
+      res = await http.post(Uri.parse(proxy), headers: {'Content-Type': 'application/json'}, body: json.encode({'url': url, 'headers': <String, String>{}}));
+    } else {
+
+      res = await http.get(Uri.parse(_webProxyUrl(url)));
+    }
 
     if (res.statusCode != 200) return [];
 
-    final data = json.decode(res.body) as List;
-
+    final data = json.decode(res.body);
+    if (data is! List) return [];
     return data.map((e) => Candle(DateTime.fromMillisecondsSinceEpoch(e[0]), toD(e[3]), toD(e[2]), toD(e[1]), toD(e[4]))).toList();
 
   } catch (_) { return []; }
@@ -4309,6 +4324,8 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
     const oiPeriods = ['5m', '15m', '30m', '1h', '4h'];
 
+    final proxyUrl = kIsWeb ? await _getApiProxyUrl() : null;
+
     // 先抓 symbol 統計資料（24h 成交量、Funding 等）
     final stats = await _fetchSymbolStats(symbol);
     pos['stats24hVol'] = stats['vol24h'];
@@ -4325,31 +4342,31 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
       } else {
 
-        candles = await _fetchKlines(symbol);
+        candles = await _fetchKlines(symbol, '15m', proxyUrl);
 
       }
 
       if (!mounted) return;
 
-      _showChartDialog(pos: pos, symbol: symbol, candles: candles, oiChanges: <String, double?>{}, oiPeriods: oiPeriods, isSettled: true);
+      _showChartDialog(pos: pos, symbol: symbol, candles: candles, oiChanges: <String, double?>{}, oiPeriods: oiPeriods, isSettled: true, proxyUrl: proxyUrl);
 
     } else {
 
-      List<Candle> candles = await _fetchKlines(symbol);
+      List<Candle> candles = await _fetchKlines(symbol, '15m', proxyUrl);
 
       final oiChanges = <String, double?>{};
 
-      await Future.wait(oiPeriods.map((p) async => oiChanges[p] = await _fetchOiChange(symbol, p)));
+      await Future.wait(oiPeriods.map((p) async => oiChanges[p] = await _fetchOiChange(symbol, p, proxyUrl)));
 
       if (!mounted) return;
 
-      _showChartDialog(pos: pos, symbol: symbol, candles: candles, oiChanges: oiChanges, oiPeriods: oiPeriods, isSettled: false);
+      _showChartDialog(pos: pos, symbol: symbol, candles: candles, oiChanges: oiChanges, oiPeriods: oiPeriods, isSettled: false, proxyUrl: proxyUrl);
 
     }
 
   }
 
-  void _showChartDialog({required Map<String, dynamic> pos, required String symbol, required List<Candle> candles, required Map<String, double?> oiChanges, required List<String> oiPeriods, required bool isSettled}) {
+  void _showChartDialog({required Map<String, dynamic> pos, required String symbol, required List<Candle> candles, required Map<String, double?> oiChanges, required List<String> oiPeriods, required bool isSettled, String? proxyUrl}) {
 
     showDialog(context: context, builder: (ctx) {
 
@@ -4385,7 +4402,9 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
             isSettled: isSettled,
 
-            buildContent: (bctx, interval, list) {
+            proxyUrl: proxyUrl,
+
+            buildContent: (bctx, interval, list, proxy) {
 
               final s = MediaQuery.of(bctx).size;
 
@@ -4395,7 +4414,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
                   ? _buildChartContent(context: bctx, pos: pos, symbol: symbol, candles: list, oiChanges: oiChanges, oiPeriods: oiPeriods, interval: interval, shrinkChart: shrinkChart)
 
-                  : _DetailChartLive(pos: pos, symbol: symbol, initialCandles: list, initialOiChanges: Map.from(oiChanges), oiPeriods: oiPeriods, interval: interval, isPortrait: isPortrait, shrinkChartHeight: shrinkChart);
+                  : _DetailChartLive(pos: pos, symbol: symbol, initialCandles: list, initialOiChanges: Map.from(oiChanges), oiPeriods: oiPeriods, interval: interval, isPortrait: isPortrait, shrinkChartHeight: shrinkChart, proxyUrl: proxy);
 
             },
 
@@ -5026,9 +5045,11 @@ class _ChartDialogContent extends StatefulWidget {
 
   final bool isSettled;
 
-  final Widget Function(BuildContext context, String interval, List<Candle> candles) buildContent;
+  final String? proxyUrl;
 
-  const _ChartDialogContent({required this.pos, required this.symbol, required this.initialCandles, required this.oiChanges, required this.oiPeriods, required this.isSettled, required this.buildContent});
+  final Widget Function(BuildContext context, String interval, List<Candle> candles, String? proxyUrl) buildContent;
+
+  const _ChartDialogContent({required this.pos, required this.symbol, required this.initialCandles, required this.oiChanges, required this.oiPeriods, required this.isSettled, this.proxyUrl, required this.buildContent});
 
   @override
 
@@ -5054,7 +5075,7 @@ class _ChartDialogContentState extends State<_ChartDialogContent> {
 
   Future<void> _loadCandles(String interval) async {
 
-    final c = await _fetchKlines(widget.symbol, interval);
+    final c = await _fetchKlines(widget.symbol, interval, widget.proxyUrl);
 
     if (mounted) setState(() => _candles = c);
 
@@ -5098,7 +5119,7 @@ class _ChartDialogContentState extends State<_ChartDialogContent> {
 
       const SizedBox(height: 8),
 
-      Expanded(child: widget.buildContent(context, _selectedInterval, widget.isSettled ? _candles : widget.initialCandles)),
+      Expanded(child: widget.buildContent(context, _selectedInterval, widget.isSettled ? _candles : widget.initialCandles, widget.proxyUrl)),
 
     ]);
 
@@ -5124,7 +5145,9 @@ class _DetailChartLive extends StatefulWidget {
 
   final bool shrinkChartHeight;
 
-  const _DetailChartLive({required this.pos, required this.symbol, required this.initialCandles, required this.initialOiChanges, required this.oiPeriods, required this.interval, this.isPortrait = false, this.shrinkChartHeight = false});
+  final String? proxyUrl;
+
+  const _DetailChartLive({required this.pos, required this.symbol, required this.initialCandles, required this.initialOiChanges, required this.oiPeriods, required this.interval, this.isPortrait = false, this.shrinkChartHeight = false, this.proxyUrl});
 
   @override
 
@@ -5178,11 +5201,11 @@ class _DetailChartLiveState extends State<_DetailChartLive> {
 
   Future<void> _refresh() async {
 
-    final c = await _fetchKlines(widget.symbol, widget.interval);
+    final c = await _fetchKlines(widget.symbol, widget.interval, widget.proxyUrl);
 
     final oi = <String, double?>{};
 
-    await Future.wait(widget.oiPeriods.map((p) async => oi[p] = await _fetchOiChange(widget.symbol, p)));
+    await Future.wait(widget.oiPeriods.map((p) async => oi[p] = await _fetchOiChange(widget.symbol, p, widget.proxyUrl)));
 
     if (!mounted) return;
 
