@@ -994,7 +994,7 @@ CartesianChartAnnotation _chartLine(dynamic p, Color c, String t) => CartesianCh
 
 );
 
-/// 1H: 每 8 小時一格；15m: 480 分(=8h)；4H: 8 小時
+/// 1H: 每 8 小時一格；15m: 90 分鐘；4H: 1 天
 DateTimeAxis _dateTimeAxisForInterval(String interval) {
 
   switch (interval) {
@@ -1005,11 +1005,11 @@ DateTimeAxis _dateTimeAxisForInterval(String interval) {
 
     case '15m':
 
-      return DateTimeAxis(interval: 480.0, intervalType: DateTimeIntervalType.minutes);
+      return DateTimeAxis(interval: 90.0, intervalType: DateTimeIntervalType.minutes);
 
     case '4h':
 
-      return DateTimeAxis(interval: 8.0, intervalType: DateTimeIntervalType.hours);
+      return DateTimeAxis(interval: 1.0, intervalType: DateTimeIntervalType.days);
 
     default:
 
@@ -1440,6 +1440,8 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
       if (!status.contains('監控中')) continue;
 
+      if (p['manualEntry'] == true) continue;
+
       final symbol = (p['symbol'] ?? '').toString();
 
       if (symbol.isEmpty) continue;
@@ -1575,6 +1577,8 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
         'status': '監控中',
 
         'side': side,
+
+        'manualEntry': false,
 
       });
 
@@ -3660,11 +3664,19 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
             isSettled: isSettled,
 
-            buildContent: (bctx, interval, list) => isSettled
+            buildContent: (bctx, interval, list) {
 
-                ? _buildChartContent(context: bctx, pos: pos, symbol: symbol, candles: list, oiChanges: oiChanges, oiPeriods: oiPeriods, interval: interval)
+              final s = MediaQuery.of(bctx).size;
 
-                : _DetailChartLive(pos: pos, symbol: symbol, initialCandles: list, initialOiChanges: Map.from(oiChanges), oiPeriods: oiPeriods, interval: interval, isPortrait: MediaQuery.of(bctx).orientation == Orientation.portrait),
+              final shrinkChart = s.height > s.width;
+
+              return isSettled
+
+                  ? _buildChartContent(context: bctx, pos: pos, symbol: symbol, candles: list, oiChanges: oiChanges, oiPeriods: oiPeriods, interval: interval, shrinkChart: shrinkChart)
+
+                  : _DetailChartLive(pos: pos, symbol: symbol, initialCandles: list, initialOiChanges: Map.from(oiChanges), oiPeriods: oiPeriods, interval: interval, isPortrait: isPortrait, shrinkChartHeight: shrinkChart);
+
+            },
 
           ),
 
@@ -3676,7 +3688,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
   }
 
-  Widget _buildChartContent({required BuildContext context, required Map<String, dynamic> pos, required String symbol, required List<Candle> candles, required Map<String, double?> oiChanges, required List<String> oiPeriods, String interval = '15m'}) {
+  Widget _buildChartContent({required BuildContext context, required Map<String, dynamic> pos, required String symbol, required List<Candle> candles, required Map<String, double?> oiChanges, required List<String> oiPeriods, String interval = '15m', bool shrinkChart = false}) {
 
     final isPortrait = MediaQuery.of(context).orientation == Orientation.portrait;
 
@@ -3686,7 +3698,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
       Text("$symbol $interval K線${pos['candles'] != null && (pos['candles'] as List).isNotEmpty ? '（結算快照）' : ''}", style: const TextStyle(color: Color(0xFFFFC0CB), fontSize: 20)),
 
-      Expanded(flex: isPortrait ? 3 : 4, child: SfCartesianChart(
+      Expanded(flex: shrinkChart ? 3 : 4, child: SfCartesianChart(
 
         primaryXAxis: axis,
 
@@ -3716,29 +3728,49 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
       )),
 
-      if (isPortrait) const Expanded(flex: 1, child: SizedBox.shrink()),
-
-      SizedBox(
-        height: 140,
-        child: Scrollbar(
-          thumbVisibility: true,
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.only(top: 4),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Divider(),
-                if (oiChanges.isNotEmpty && oiChanges.values.any((v) => v != null))
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                    child: _chartOiGrid(oiPeriods, oiChanges, isPortrait: isPortrait),
+      shrinkChart
+          ? Expanded(
+              flex: 1,
+              child: Scrollbar(
+                thumbVisibility: true,
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Divider(),
+                      if (oiChanges.isNotEmpty && oiChanges.values.any((v) => v != null))
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          child: _chartOiGrid(oiPeriods, oiChanges, isPortrait: isPortrait),
+                        ),
+                      _chartPositionSummary(pos, isPortrait: isPortrait),
+                    ],
                   ),
-                _chartPositionSummary(pos, isPortrait: isPortrait),
-              ],
+                ),
+              ),
+            )
+          : SizedBox(
+              height: 140,
+              child: Scrollbar(
+                thumbVisibility: true,
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Divider(),
+                      if (oiChanges.isNotEmpty && oiChanges.values.any((v) => v != null))
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          child: _chartOiGrid(oiPeriods, oiChanges, isPortrait: isPortrait),
+                        ),
+                      _chartPositionSummary(pos, isPortrait: isPortrait),
+                    ],
+                  ),
+                ),
+              ),
             ),
-          ),
-        ),
-      ),
 
       const SizedBox(height: 8),
 
@@ -3992,7 +4024,9 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
                     'sl': toD(cs['sl']!.text), 'status': '監控中',
 
-                    'side': isLong ? 'long' : 'short'
+                    'side': isLong ? 'long' : 'short',
+
+                    'manualEntry': true,
 
                   }));
 
@@ -4360,7 +4394,9 @@ class _DetailChartLive extends StatefulWidget {
 
   final bool isPortrait;
 
-  const _DetailChartLive({required this.pos, required this.symbol, required this.initialCandles, required this.initialOiChanges, required this.oiPeriods, required this.interval, this.isPortrait = false});
+  final bool shrinkChartHeight;
+
+  const _DetailChartLive({required this.pos, required this.symbol, required this.initialCandles, required this.initialOiChanges, required this.oiPeriods, required this.interval, this.isPortrait = false, this.shrinkChartHeight = false});
 
   @override
 
@@ -4436,7 +4472,7 @@ class _DetailChartLiveState extends State<_DetailChartLive> {
 
       Text("${widget.symbol} ${widget.interval} K線（每 $_intervalSec 秒更新）", style: const TextStyle(color: Color(0xFFFFC0CB), fontSize: 20)),
 
-      Expanded(flex: widget.isPortrait ? 3 : 4, child: SfCartesianChart(
+      Expanded(flex: widget.shrinkChartHeight ? 3 : 4, child: SfCartesianChart(
 
         primaryXAxis: _dateTimeAxisForInterval(widget.interval),
 
@@ -4466,28 +4502,47 @@ class _DetailChartLiveState extends State<_DetailChartLive> {
 
       )),
 
-      if (widget.isPortrait) const Expanded(flex: 1, child: SizedBox.shrink()),
-
-      SizedBox(
-        height: 140,
-        child: Scrollbar(
-          thumbVisibility: true,
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.only(top: 4),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Divider(),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  child: _chartOiGrid(widget.oiPeriods, oiChanges, isPortrait: widget.isPortrait),
+      widget.shrinkChartHeight
+          ? Expanded(
+              flex: 1,
+              child: Scrollbar(
+                thumbVisibility: true,
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Divider(),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        child: _chartOiGrid(widget.oiPeriods, oiChanges, isPortrait: widget.isPortrait),
+                      ),
+                      _chartPositionSummary(pos, isPortrait: widget.isPortrait),
+                    ],
+                  ),
                 ),
-                _chartPositionSummary(pos, isPortrait: widget.isPortrait),
-              ],
+              ),
+            )
+          : SizedBox(
+              height: 140,
+              child: Scrollbar(
+                thumbVisibility: true,
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Divider(),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        child: _chartOiGrid(widget.oiPeriods, oiChanges, isPortrait: widget.isPortrait),
+                      ),
+                      _chartPositionSummary(pos, isPortrait: widget.isPortrait),
+                    ],
+                  ),
+                ),
+              ),
             ),
-          ),
-        ),
-      ),
 
       const SizedBox(height: 8),
 
