@@ -756,6 +756,38 @@ Future<double?> _fetchOiChange(String symbol, String period) async {
 
 }
 
+/// 取得合約 24h 成交量（quoteVolume）與 Funding rate（%）等簡易統計
+Future<Map<String, dynamic>> _fetchSymbolStats(String symbol) async {
+  double? vol24h;
+  double? fundingRate;
+  int? fundingTime;
+  try {
+    // 24h ticker
+    final res24 = await http.get(Uri.parse('https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=$symbol'));
+    if (res24.statusCode == 200) {
+      final m = json.decode(res24.body) as Map;
+      // 以 quoteVolume（USDT 金額）為主，比純張數直覺
+      vol24h = toD(m['quoteVolume']);
+    }
+  } catch (_) {}
+  try {
+    // Funding 資訊
+    final resFunding = await http.get(Uri.parse('https://fapi.binance.com/fapi/v1/premiumIndex?symbol=$symbol'));
+    if (resFunding.statusCode == 200) {
+      final m = json.decode(resFunding.body) as Map;
+      final last = m['lastFundingRate'];
+      if (last != null) fundingRate = toD(last) * 100;
+      final t = (m['time'] as num?) ?? (m['nextFundingTime'] as num?);
+      if (t != null) fundingTime = t.toInt();
+    }
+  } catch (_) {}
+  return {
+    'vol24h': vol24h,
+    'fundingRate': fundingRate,
+    'fundingTime': fundingTime,
+  };
+}
+
 
 
 void main() async {
@@ -806,11 +838,13 @@ class Candle {
 
 }
 
-Future<List<Candle>> _fetchKlines(String symbol) async {
+const List<String> _klineIntervals = ['15m', '1h', '4h'];
+
+Future<List<Candle>> _fetchKlines(String symbol, [String interval = '15m']) async {
 
   try {
 
-    final res = await http.get(Uri.parse('https://fapi.binance.com/fapi/v1/klines?symbol=$symbol&interval=15m&limit=40'));
+    final res = await http.get(Uri.parse('https://fapi.binance.com/fapi/v1/klines?symbol=$symbol&interval=$interval&limit=60'));
 
     if (res.statusCode != 200) return [];
 
@@ -852,6 +886,125 @@ Widget _chartOiChip(String period, double? change) {
 
   return Text("$period: $sign${change.toStringAsFixed(2)}%", style: TextStyle(fontSize: 11, fontWeight: FontWeight.w500, color: isUp ? Colors.green : Colors.red));
 
+}
+
+Widget _chartOiGrid(List<String> periods, Map<String, double?> oiChanges) {
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      const Text("OI 變動：", style: TextStyle(fontSize: 12, color: Colors.grey)),
+      const SizedBox(height: 4),
+      SizedBox(
+        width: double.infinity,
+        child: GridView.count(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          // 3 欄，行數依內容自動往下長
+          crossAxisCount: 3,
+          // 行距更小
+          mainAxisSpacing: 1,
+          crossAxisSpacing: 12,
+          // 加大寬高比，讓每格更扁，行距自然縮小
+          childAspectRatio: 9.0,
+          children: periods
+              .map((p) => Align(
+                    alignment: Alignment.centerLeft,
+                    child: _chartOiChip(p, oiChanges[p]),
+                  ))
+              .toList(),
+        ),
+      ),
+    ],
+  );
+}
+
+Widget _chartPositionSummary(Map<String, dynamic> pos) {
+  final uValue = toD(pos['uValue']);
+  final lev = pos['leverage'];
+  final vol24h = pos['stats24hVol'];
+  final funding = pos['statsFundingRate'];
+  final ft = pos['statsFundingTime'];
+
+  String _fmtVol24h(dynamic v) {
+    if (v == null) return '--';
+    final d = v is num ? v.toDouble() : double.tryParse(v.toString());
+    if (d == null) return '--';
+    if (d >= 1e9) return '${(d / 1e9).toStringAsFixed(2)}B';
+    if (d >= 1e6) return '${(d / 1e6).toStringAsFixed(2)}M';
+    if (d >= 1e3) return '${(d / 1e3).toStringAsFixed(2)}K';
+    return d.toStringAsFixed(2);
+  }
+
+  String _fmtFunding(dynamic v) {
+    if (v == null) return '--';
+    final d = v is num ? v.toDouble() : double.tryParse(v.toString());
+    if (d == null) return '--';
+    final sign = d >= 0 ? '+' : '';
+    return '$sign${d.toStringAsFixed(4)}%';
+  }
+
+  String _fmtTimeMs(dynamic ms) {
+    if (ms == null) return '--';
+    final n = ms is num ? ms.toInt() : int.tryParse(ms.toString());
+    if (n == null || n <= 0) return '--';
+    final dt = DateTime.fromMillisecondsSinceEpoch(n);
+    final h = dt.hour.toString().padLeft(2, '0');
+    final m = dt.minute.toString().padLeft(2, '0');
+    return '$h:$m';
+  }
+
+  String _fmtRoi() {
+    final ent = toD(pos['entry']);
+    final cur = toD(pos['current']);
+    final levNum = (lev is num) ? lev.toInt() : int.tryParse(lev.toString()) ?? 1;
+    final ratio = toD(pos['exitRatio']) > 0 ? toD(pos['exitRatio']) : 1.0;
+    if (ent == 0) return '--';
+    final isLong = (pos['side'] ?? '').toString().toUpperCase().contains('LONG');
+    final priceDiff = isLong ? (cur - ent) : (ent - cur);
+    return ((priceDiff / ent) * 100 * levNum * ratio).toStringAsFixed(2);
+  }
+
+  // 總值 = 保證金 × 槓桿
+  final levNum = (lev is num) ? lev.toInt() : int.tryParse(lev.toString()) ?? 1;
+  final totalValue = uValue * levNum;
+
+  final items = <String, String>{
+    '倉位價值': "${totalValue.toStringAsFixed(2)}U",
+    '24h Vol': _fmtVol24h(vol24h),
+    'Funding': _fmtFunding(funding),
+    '時間標記': _fmtTimeMs(ft),
+    'ROI': "${_fmtRoi()}%",
+  };
+
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      const SizedBox(height: 6),
+      const Text("倉位摘要：", style: TextStyle(fontSize: 12, color: Colors.grey)),
+      const SizedBox(height: 4),
+      SizedBox(
+        width: double.infinity,
+        child: GridView.count(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          // 同樣採用 3×3 風格
+          crossAxisCount: 3,
+          mainAxisSpacing: 1,
+          crossAxisSpacing: 12,
+          childAspectRatio: 9.0,
+          children: items.entries
+              .map((e) => Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      "${e.key}: ${e.value}",
+                      style: const TextStyle(fontSize: 11, color: Colors.grey),
+                    ),
+                  ))
+              .toList(),
+        ),
+      ),
+    ],
+  );
 }
 
 
@@ -912,7 +1065,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
     if (data != null) {
 
-      setState(() {
+    setState(() {
 
         positions = json.decode(data);
 
@@ -1309,17 +1462,17 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
     final options = [
 
-      {'id': 'default', 'label': '預設漸層', 'desc': '深色帶淡粉紫'},
+      {'id': 'default', 'label': '預設', 'desc': '深色帶淡粉紫'},
 
-      {'id': 'gradient_soft', 'label': '柔和漸層', 'desc': '深藍灰'},
+      {'id': 'gradient_soft', 'label': '柔和', 'desc': '深藍灰'},
 
       {'id': 'gradient_midnight', 'label': '午夜藍', 'desc': '藍紫色系'},
 
-      {'id': 'gradient_warm', 'label': '暖色漸層', 'desc': '深褐紅'},
+      {'id': 'gradient_warm', 'label': '暖色', 'desc': '深褐紅'},
 
       {'id': 'dynamic', 'label': '動態背景', 'desc': '光球・線條・粒子'},
 
-      {'id': 'custom', 'label': '自訂圖片', 'desc': kIsWeb ? '從本機選擇圖片（網頁版）' : '從相簿選擇'},
+      {'id': 'custom', 'label': '自訂圖片', 'desc': kIsWeb ? '從本機選擇圖片' : '從相簿選擇'},
 
     ];
 
@@ -2688,7 +2841,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
         backgroundColor: Colors.transparent,
 
-        appBar: AppBar(
+      appBar: AppBar(
 
           title: const Text('任務看板'),
 
@@ -2706,13 +2859,13 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
                   mainAxisSize: MainAxisSize.min,
 
-                  children: [
+          children: [
 
                     const Icon(Icons.emoji_events_outlined, color: Color(0xFFFFC0CB), size: 22),
 
                     const SizedBox(width: 4),
 
-                    Text(
+            Text(
 
                       'Lv.${_levelData?['level'] ?? 1}',
 
@@ -2954,7 +3107,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
         final subtitle = isSettled
 
-            ? "營利: ${_pnlAmount(pos) >= 0 ? '+' : ''}${_pnlAmount(pos).toStringAsFixed(2)} U | RR: ${_rrValue(pos) != null ? _rrValue(pos)!.toStringAsFixed(2) : '--'} | ROI: ${calculateROI(pos)}% | 結算: ${_fmtEntryTime(pos['settledAt'])} · 持倉 ${_fmtDuration(pos['entryTime'], pos['settledAt'])}${pos['status'].toString().contains('止盈') && pos['hitTp'] != null ? ' · ${_tpLabel(pos['hitTp'].toString(), pos)}' : ''} | ${_statusDisplay(pos['status'], pos)}"
+            ? "盈利: ${_pnlAmount(pos) >= 0 ? '+' : ''}${_pnlAmount(pos).toStringAsFixed(2)} U | RR: ${_rrValue(pos) != null ? _rrValue(pos)!.toStringAsFixed(2) : '--'} | ROI: ${calculateROI(pos)}% | 結算: ${_fmtEntryTime(pos['settledAt'])} · 持倉 ${_fmtDuration(pos['entryTime'], pos['settledAt'])}${pos['status'].toString().contains('止盈') && pos['hitTp'] != null ? ' · ${_tpLabel(pos['hitTp'].toString(), pos)}' : ''} | ${_statusDisplay(pos['status'], pos)}"
 
             : "ROI: ${calculateROI(pos)}% | 進場: ${_fmtEntryTime(pos['entryTime'])} | ${_statusDisplay(pos['status'], pos)}";
 
@@ -3046,6 +3199,12 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
     const oiPeriods = ['5m', '15m', '30m', '1h', '4h'];
 
+    // 先抓 symbol 統計資料（24h 成交量、Funding 等）
+    final stats = await _fetchSymbolStats(symbol);
+    pos['stats24hVol'] = stats['vol24h'];
+    pos['statsFundingRate'] = stats['fundingRate'];
+    pos['statsFundingTime'] = stats['fundingTime'];
+
     if (isSettled) {
 
       List<Candle> candles = [];
@@ -3090,11 +3249,17 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
         width: 900, height: 660,
 
-        child: isSettled
+        child: _ChartDialogContent(
 
-            ? _buildChartContent(pos: pos, symbol: symbol, candles: candles, oiChanges: oiChanges, oiPeriods: oiPeriods)
+          pos: pos, symbol: symbol, initialCandles: candles, oiChanges: oiChanges, oiPeriods: oiPeriods, isSettled: isSettled,
 
-            : _DetailChartLive(pos: pos, symbol: symbol, initialCandles: candles, initialOiChanges: Map.from(oiChanges), oiPeriods: oiPeriods),
+          buildContent: (interval, list) => isSettled
+
+              ? _buildChartContent(pos: pos, symbol: symbol, candles: list, oiChanges: oiChanges, oiPeriods: oiPeriods, interval: interval)
+
+              : _DetailChartLive(pos: pos, symbol: symbol, initialCandles: list, initialOiChanges: Map.from(oiChanges), oiPeriods: oiPeriods, interval: interval),
+
+        ),
 
       ),
 
@@ -3102,11 +3267,11 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
   }
 
-  Widget _buildChartContent({required Map<String, dynamic> pos, required String symbol, required List<Candle> candles, required Map<String, double?> oiChanges, required List<String> oiPeriods}) {
+  Widget _buildChartContent({required Map<String, dynamic> pos, required String symbol, required List<Candle> candles, required Map<String, double?> oiChanges, required List<String> oiPeriods, String interval = '15m'}) {
 
     return Column(children: [
 
-      Text("$symbol 15m K線${pos['candles'] != null && (pos['candles'] as List).isNotEmpty ? '（結算快照）' : ''}", style: const TextStyle(color: Color(0xFFFFC0CB), fontSize: 20)),
+      Text("$symbol $interval K線${pos['candles'] != null && (pos['candles'] as List).isNotEmpty ? '（結算快照）' : ''}", style: const TextStyle(color: Color(0xFFFFC0CB), fontSize: 20)),
 
       Expanded(child: SfCartesianChart(
 
@@ -3138,17 +3303,28 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
       )),
 
-      const Divider(),
-
-      if (oiChanges.isNotEmpty && oiChanges.values.any((v) => v != null)) Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-
-        const Text("OI 變動：", style: TextStyle(fontSize: 12, color: Colors.grey)),
-
-        const SizedBox(width: 8),
-
-        ...oiPeriods.map((p) => Padding(padding: const EdgeInsets.only(right: 12), child: _chartOiChip(p, oiChanges[p]))),
-
-      ]) else const SizedBox.shrink(),
+      // 底部資訊區（OI + 倉位摘要）固定高度，可捲動，避免壓縮圖表
+      SizedBox(
+        height: 140,
+        child: Scrollbar(
+          thumbVisibility: true,
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.only(top: 4),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Divider(),
+                if (oiChanges.isNotEmpty && oiChanges.values.any((v) => v != null))
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    child: _chartOiGrid(oiPeriods, oiChanges),
+                  ),
+                _chartPositionSummary(pos),
+              ],
+            ),
+          ),
+        ),
+      ),
 
       const SizedBox(height: 8),
 
@@ -3180,7 +3356,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
           Column(children: [
 
-            const Text("營利金額", style: TextStyle(fontSize: 11, color: Colors.grey)),
+            const Text("盈利金額", style: TextStyle(fontSize: 11, color: Colors.grey)),
 
             Text("${_pnlAmount(pos) >= 0 ? '+' : ''}${_pnlAmount(pos).toStringAsFixed(2)} U", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: _pnlAmount(pos) >= 0 ? Colors.green : Colors.red)),
 
@@ -3454,7 +3630,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
                 },
 
-                child: const Text("存檔啟動", style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold))
+                child: const Text("開始監控", style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold))
 
               ),
 
@@ -3526,13 +3702,13 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
                 const SizedBox(width: 10),
 
-                Expanded(child: TextField(controller: cs['val'], decoration: const InputDecoration(labelText: "倉位 (U)"), keyboardType: TextInputType.number)),
+                Expanded(child: TextField(controller: cs['val'], decoration: const InputDecoration(labelText: "保證金 "), keyboardType: TextInputType.number)),
 
               ]),
 
               TextField(controller: cs['ent'], decoration: const InputDecoration(labelText: "進場價"), keyboardType: TextInputType.number),
 
-              if (isSettledEdit) TextField(controller: cs['settledPrice'], decoration: const InputDecoration(labelText: "結算價（已結算單的出場價，用於計算營利與 RR）"), keyboardType: TextInputType.number),
+              if (isSettledEdit) TextField(controller: cs['settledPrice'], decoration: const InputDecoration(labelText: "結算價"), keyboardType: TextInputType.number),
 
               const SizedBox(height: 8),
 
@@ -3660,6 +3836,100 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
 }
 
+class _ChartDialogContent extends StatefulWidget {
+
+  final Map<String, dynamic> pos;
+
+  final String symbol;
+
+  final List<Candle> initialCandles;
+
+  final Map<String, double?> oiChanges;
+
+  final List<String> oiPeriods;
+
+  final bool isSettled;
+
+  final Widget Function(String interval, List<Candle> candles) buildContent;
+
+  const _ChartDialogContent({required this.pos, required this.symbol, required this.initialCandles, required this.oiChanges, required this.oiPeriods, required this.isSettled, required this.buildContent});
+
+  @override
+
+  State<_ChartDialogContent> createState() => _ChartDialogContentState();
+
+}
+
+class _ChartDialogContentState extends State<_ChartDialogContent> {
+
+  String _selectedInterval = '15m';
+
+  late List<Candle> _candles;
+
+  @override
+
+  void initState() {
+
+    super.initState();
+
+    _candles = List.from(widget.initialCandles);
+
+  }
+
+  Future<void> _loadCandles(String interval) async {
+
+    final c = await _fetchKlines(widget.symbol, interval);
+
+    if (mounted) setState(() => _candles = c);
+
+  }
+
+  @override
+
+  Widget build(BuildContext context) {
+
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+
+      Row(children: [
+
+        const Text("週期：", style: TextStyle(color: Colors.grey, fontSize: 14)),
+
+        const SizedBox(width: 8),
+
+        ..._klineIntervals.map((iv) => Padding(
+
+          padding: const EdgeInsets.only(right: 8),
+
+          child: ChoiceChip(
+
+            label: Text(iv),
+
+            selected: _selectedInterval == iv,
+
+            onSelected: (_) {
+
+              setState(() => _selectedInterval = iv);
+
+              if (widget.isSettled) _loadCandles(iv);
+
+            },
+
+          ),
+
+        )),
+
+      ]),
+
+      const SizedBox(height: 8),
+
+      Expanded(child: widget.buildContent(_selectedInterval, widget.isSettled ? _candles : widget.initialCandles)),
+
+    ]);
+
+  }
+
+}
+
 class _DetailChartLive extends StatefulWidget {
 
   final Map<String, dynamic> pos;
@@ -3672,7 +3942,9 @@ class _DetailChartLive extends StatefulWidget {
 
   final List<String> oiPeriods;
 
-  const _DetailChartLive({required this.pos, required this.symbol, required this.initialCandles, required this.initialOiChanges, required this.oiPeriods});
+  final String interval;
+
+  const _DetailChartLive({required this.pos, required this.symbol, required this.initialCandles, required this.initialOiChanges, required this.oiPeriods, required this.interval});
 
   @override
 
@@ -3714,9 +3986,19 @@ class _DetailChartLiveState extends State<_DetailChartLive> {
 
   }
 
+  @override
+
+  void didUpdateWidget(covariant _DetailChartLive oldWidget) {
+
+    super.didUpdateWidget(oldWidget);
+
+    if (oldWidget.interval != widget.interval) _refresh();
+
+  }
+
   Future<void> _refresh() async {
 
-    final c = await _fetchKlines(widget.symbol);
+    final c = await _fetchKlines(widget.symbol, widget.interval);
 
     final oi = <String, double?>{};
 
@@ -3736,7 +4018,7 @@ class _DetailChartLiveState extends State<_DetailChartLive> {
 
     return Column(children: [
 
-      Text("${widget.symbol} 15m K線（每 $_intervalSec 秒更新）", style: const TextStyle(color: Color(0xFFFFC0CB), fontSize: 20)),
+      Text("${widget.symbol} ${widget.interval} K線（每 $_intervalSec 秒更新）", style: const TextStyle(color: Color(0xFFFFC0CB), fontSize: 20)),
 
       Expanded(child: SfCartesianChart(
 
@@ -3768,17 +4050,27 @@ class _DetailChartLiveState extends State<_DetailChartLive> {
 
       )),
 
-      const Divider(),
-
-      Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-
-        const Text("OI 變動：", style: TextStyle(fontSize: 12, color: Colors.grey)),
-
-        const SizedBox(width: 8),
-
-        ...widget.oiPeriods.map((p) => Padding(padding: const EdgeInsets.only(right: 12), child: _chartOiChip(p, oiChanges[p]))),
-
-      ]),
+      // 底部資訊區（OI + 倉位摘要）固定高度，可捲動，避免壓縮圖表
+      SizedBox(
+        height: 140,
+        child: Scrollbar(
+          thumbVisibility: true,
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.only(top: 4),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Divider(),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  child: _chartOiGrid(widget.oiPeriods, oiChanges),
+                ),
+                _chartPositionSummary(pos),
+              ],
+            ),
+          ),
+        ),
+      ),
 
       const SizedBox(height: 8),
 
