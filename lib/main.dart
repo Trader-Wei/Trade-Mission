@@ -30,6 +30,9 @@ import 'dynamic_background.dart';
 
 double toD(dynamic v) => (v is num) ? v.toDouble() : (double.tryParse(v.toString()) ?? 0.0);
 
+/// 網頁版因 CORS 無法直接請求交易所 API，需透過代理轉發
+String _webProxyUrl(String url) => kIsWeb ? 'https://api.cors.lol/?url=${Uri.encodeComponent(url)}' : url;
+
 
 
 String _fmtEntryTime(dynamic ms) {
@@ -594,7 +597,7 @@ Future<List<dynamic>?> _fetchBinancePositionRisk(String apiKey, String apiSecret
 
     final signature = _binanceSignature(apiSecret, query);
 
-    final uri = Uri.parse('$baseUrl/fapi/v2/positionRisk?$query&signature=$signature');
+    final uri = Uri.parse(_webProxyUrl('$baseUrl/fapi/v2/positionRisk?$query&signature=$signature'));
 
     final res = await http.get(uri, headers: {'X-MBX-APIKEY': apiKey});
 
@@ -642,7 +645,7 @@ Future<List<dynamic>?> _fetchBittapPositions(String apiKey, String apiSecret) as
 
     final signature = _bittapSign(apiSecret, signData);
 
-    final uri = Uri.parse('$baseUrl/api/v1/futures/position/list');
+    final uri = Uri.parse(_webProxyUrl('$baseUrl/api/v1/futures/position/list'));
 
     final res = await http.get(uri, headers: {
 
@@ -764,7 +767,7 @@ Future<List<dynamic>?> _fetchBingxPositions(String apiKey, String apiSecret) asy
 
     final signature = _bingxSign(apiSecret, query);
 
-    final uri = Uri.parse('$baseUrl/openApi/swap/v2/user/positions?$query&signature=$signature');
+    final uri = Uri.parse(_webProxyUrl('$baseUrl/openApi/swap/v2/user/positions?$query&signature=$signature'));
 
     final res = await http.get(uri, headers: {
 
@@ -848,11 +851,11 @@ Future<double?> _fetchOiChange(String symbol, String period) async {
 
   try {
 
-    final res = await http.get(Uri.parse(
+    final res = await http.get(Uri.parse(_webProxyUrl(
 
       'https://fapi.binance.com/futures/data/openInterestHist?symbol=$symbol&period=$period&limit=2',
 
-    ));
+    )));
 
     if (res.statusCode != 200) return null;
 
@@ -883,7 +886,7 @@ Future<Map<String, dynamic>> _fetchSymbolStats(String symbol) async {
   int? fundingTime;
   try {
     // 24h ticker
-    final res24 = await http.get(Uri.parse('https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=$symbol'));
+    final res24 = await http.get(Uri.parse(_webProxyUrl('https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=$symbol')));
     if (res24.statusCode == 200) {
       final m = json.decode(res24.body) as Map;
       // 以 quoteVolume（USDT 金額）為主，比純張數直覺
@@ -892,7 +895,7 @@ Future<Map<String, dynamic>> _fetchSymbolStats(String symbol) async {
   } catch (_) {}
   try {
     // Funding 資訊
-    final resFunding = await http.get(Uri.parse('https://fapi.binance.com/fapi/v1/premiumIndex?symbol=$symbol'));
+    final resFunding = await http.get(Uri.parse(_webProxyUrl('https://fapi.binance.com/fapi/v1/premiumIndex?symbol=$symbol')));
     if (resFunding.statusCode == 200) {
       final m = json.decode(resFunding.body) as Map;
       final last = m['lastFundingRate'];
@@ -964,7 +967,7 @@ Future<List<Candle>> _fetchKlines(String symbol, [String interval = '15m']) asyn
 
   try {
 
-    final res = await http.get(Uri.parse('https://fapi.binance.com/fapi/v1/klines?symbol=$symbol&interval=$interval&limit=40'));
+    final res = await http.get(Uri.parse(_webProxyUrl('https://fapi.binance.com/fapi/v1/klines?symbol=$symbol&interval=$interval&limit=40')));
 
     if (res.statusCode != 200) return [];
 
@@ -1185,6 +1188,9 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
   final _secureStorage = const FlutterSecureStorage(aOptions: AndroidOptions(encryptedSharedPreferences: true));
 
+  /// 連續幾次 API 同步未偵測到該倉位時，才判定為已關閉（避免 API 延遲或短暫未回傳造成誤判）
+  final _apiMissingCount = <String, int>{};
+
 
 
   @override
@@ -1267,7 +1273,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
     _timer = Timer.periodic(const Duration(seconds: 5), (t) => _refresh());
 
-    _syncTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+    _syncTimer = Timer.periodic(const Duration(seconds: 2), (_) {
 
       _syncPositionsFromApi().then((result) {
 
@@ -1500,7 +1506,17 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
         updatedCount++;
 
+        _apiMissingCount[symbol] = 0;
+
       } else {
+
+        final missingCount = (_apiMissingCount[symbol] ?? 0) + 1;
+
+        _apiMissingCount[symbol] = missingCount;
+
+        if (missingCount < 4) continue;
+
+        _apiMissingCount.remove(symbol);
 
         p['status'] = '完全平倉';
 
@@ -1529,6 +1545,8 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
     int added = 0;
 
     final now = DateTime.now();
+
+    const reopenWindowMs = 120000;
 
     for (final raw in list) {
 
@@ -1560,39 +1578,103 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
       final side = positionAmt > 0 ? 'long' : 'short';
 
-      positions.add({
+      Map<String, dynamic>? recentlyClosed;
 
-        'symbol': symbol,
+      int? latestSettled;
 
-        'leverage': leverage < 1 ? 1 : leverage,
+      for (final p in positions) {
 
-        'uValue': uValue,
+        if (p is! Map) continue;
 
-        'entry': entryPrice,
+        if ((p['symbol'] ?? '').toString() != symbol) continue;
 
-        'current': markPrice,
+        final status = p['status']?.toString() ?? '';
 
-        'entryTime': now.millisecondsSinceEpoch,
+        if (!status.contains('完全平倉') && !status.contains('部分平倉')) continue;
 
-        'tp1': 0.0,
+        final settled = p['settledAt'];
 
-        'tp2': 0.0,
+        if (settled == null) continue;
 
-        'tp3': 0.0,
+        final settledMs = settled is num ? settled.toInt() : int.tryParse(settled.toString());
 
-        'sl': 0.0,
+        if (settledMs == null || now.millisecondsSinceEpoch - settledMs > reopenWindowMs) continue;
 
-        'status': '監控中',
+        if (latestSettled == null || settledMs > latestSettled) {
 
-        'side': side,
+          latestSettled = settledMs;
 
-        'manualEntry': false,
+          recentlyClosed = p as Map<String, dynamic>;
 
-      });
+        }
 
-      watchingSymbols.add(symbol);
+      }
 
-      added++;
+      if (recentlyClosed != null) {
+
+        recentlyClosed['status'] = '監控中';
+
+        recentlyClosed['entry'] = entryPrice;
+
+        recentlyClosed['current'] = markPrice;
+
+        recentlyClosed['uValue'] = uValue;
+
+        recentlyClosed['leverage'] = leverage < 1 ? 1 : leverage;
+
+        recentlyClosed['side'] = side;
+
+        recentlyClosed.remove('settledAt');
+
+        recentlyClosed.remove('exitRatio');
+
+        recentlyClosed.remove('exitRatioDisplay');
+
+        _apiMissingCount[symbol] = 0;
+
+        watchingSymbols.add(symbol);
+
+        added++;
+
+      } else {
+
+        positions.add({
+
+          'symbol': symbol,
+
+          'leverage': leverage < 1 ? 1 : leverage,
+
+          'uValue': uValue,
+
+          'entry': entryPrice,
+
+          'current': markPrice,
+
+          'entryTime': now.millisecondsSinceEpoch,
+
+          'tp1': 0.0,
+
+          'tp2': 0.0,
+
+          'tp3': 0.0,
+
+          'sl': 0.0,
+
+          'status': '監控中',
+
+          'side': side,
+
+          'manualEntry': false,
+
+        });
+
+        _apiMissingCount[symbol] = 0;
+
+        watchingSymbols.add(symbol);
+
+        added++;
+
+      }
 
     }
 
@@ -1643,6 +1725,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
                 const SizedBox(height: 8),
 
                 const Text('用於自動讀取當前持倉並建立監控任務。請使用僅具「讀取」權限的 API，勿勾選提現與交易。', style: TextStyle(fontSize: 11, color: Colors.grey)),
+                if (kIsWeb) const Padding(padding: EdgeInsets.only(top: 6), child: Text('網頁版已透過 CORS 代理連線；若持倉同步失敗，請改用桌面版或手機版。', style: TextStyle(fontSize: 10, color: Colors.orangeAccent))),
 
                 const SizedBox(height: 16),
 
@@ -2038,7 +2121,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
       try {
 
-        final res = await http.get(Uri.parse('https://fapi.binance.com/fapi/v1/ticker/price?symbol=${positions[i]['symbol']}'));
+        final res = await http.get(Uri.parse(_webProxyUrl('https://fapi.binance.com/fapi/v1/ticker/price?symbol=${positions[i]['symbol']}')));
 
         if (res.statusCode == 200) {
 
@@ -2150,13 +2233,13 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
     if (isLong) {
 
-      if (cur <= sl) pos['status'] = '止損出局 ⚡️';
+      if (sl > 0 && cur <= sl) pos['status'] = '止損出局 ⚡️';
 
       else if (targetTp > 0 && cur >= targetTp) pos['status'] = '止盈達標 ⭐️';
 
     } else {
 
-      if (cur >= sl) pos['status'] = '止損出局 ⚡️';
+      if (sl > 0 && cur >= sl) pos['status'] = '止損出局 ⚡️';
 
       else if (targetTp > 0 && cur <= targetTp) pos['status'] = '止盈達標 ⭐️';
 
