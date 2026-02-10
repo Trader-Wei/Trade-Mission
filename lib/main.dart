@@ -1124,6 +1124,41 @@ DateTimeAxis _dateTimeAxisForInterval(String interval) {
 
 }
 
+/// 從倉位的 entry/tp/sl 算出 Y 軸範圍，避免無 K 線時出現 0～5.5 的錯誤刻度
+(double min, double max)? _yRangeFromPosition(Map<String, dynamic> pos) {
+
+  final entry = toD(pos['entry']);
+
+  final sl = toD(pos['sl']);
+
+  final tp1 = toD(pos['tp1']);
+
+  final tp2 = toD(pos['tp2']);
+
+  final tp3 = toD(pos['tp3']);
+
+  final values = <double>[entry, sl];
+
+  if (tp1 > 0) values.add(tp1);
+
+  if (tp2 > 0) values.add(tp2);
+
+  if (tp3 > 0) values.add(tp3);
+
+  final valid = values.where((v) => v > 0).toList();
+
+  if (valid.isEmpty) return (0, 100000);
+
+  final mn = valid.reduce((a, b) => a < b ? a : b);
+
+  final mx = valid.reduce((a, b) => a > b ? a : b);
+
+  final pad = (mx - mn).clamp(1.0, double.infinity) * 0.1;
+
+  return (mn - pad, mx + pad);
+
+}
+
 Widget _chartBox(String l, String v) => Column(children: [Text(l, style: const TextStyle(fontSize: 10, color: Colors.grey)), Text(v)]);
 
 Widget _chartOiChip(String period, double? change) {
@@ -4380,13 +4415,17 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
     final axis = _dateTimeAxisForInterval(interval);
 
+    final yRange = candles.isEmpty ? _yRangeFromPosition(pos) : null;
+
     return Column(children: [
 
-      Text("$symbol $interval K線${pos['candles'] != null && (pos['candles'] as List).isNotEmpty ? '（Close snapshot）' : ''}", style: const TextStyle(color: Color(0xFFFFC0CB), fontSize: 20)),
+      Text("$symbol $interval K線${pos['candles'] != null && (pos['candles'] as List).isNotEmpty ? '（Close snapshot）' : ''}${candles.isEmpty ? ' · K 線載入失敗，僅顯示進出場線' : ''}", style: const TextStyle(color: Color(0xFFFFC0CB), fontSize: 20)),
 
       Expanded(flex: shrinkChart ? 2 : 3, child: SfCartesianChart(
 
         primaryXAxis: axis,
+
+        primaryYAxis: yRange != null ? NumericAxis(minimum: yRange.$1, maximum: yRange.$2) : NumericAxis(),
 
         series: <CartesianSeries<Candle, DateTime>>[
 
@@ -5157,13 +5196,17 @@ class _DetailChartLiveState extends State<_DetailChartLive> {
 
     final pos = widget.pos;
 
+    final yRange = candles.isEmpty ? _yRangeFromPosition(pos) : null;
+
     return Column(children: [
 
-      Text("${widget.symbol} ${widget.interval} K線", style: const TextStyle(color: Color(0xFFFFC0CB), fontSize: 20)),
+      Text("${widget.symbol} ${widget.interval} K線${candles.isEmpty ? ' · K 線載入失敗，僅顯示進出場線' : ''}", style: const TextStyle(color: Color(0xFFFFC0CB), fontSize: 20)),
 
       Expanded(flex: widget.shrinkChartHeight ? 2 : 3, child: SfCartesianChart(
 
         primaryXAxis: _dateTimeAxisForInterval(widget.interval),
+
+        primaryYAxis: yRange != null ? NumericAxis(minimum: yRange.$1, maximum: yRange.$2) : NumericAxis(),
 
         series: <CartesianSeries<Candle, DateTime>>[
 
