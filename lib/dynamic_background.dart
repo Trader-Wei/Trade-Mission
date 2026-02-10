@@ -23,7 +23,7 @@ class _DynamicBackgroundState extends State<DynamicBackground>
     super.initState();
     _controller = AnimationController(
       vsync: this,
-      duration: const Duration(seconds: 6),
+      duration: const Duration(seconds: 12),
     )..repeat();
 
     _twinkleController = AnimationController(
@@ -85,7 +85,6 @@ class _GalaxyPainter extends CustomPainter {
     final maxDim = math.max(w, h);
 
     _drawBase(canvas, w, h);
-    _drawTunnel(canvas, w, h, t);
     _drawNebulaGlow(canvas, cx, cy, maxDim);
     _drawSpiralArms(canvas, cx, cy, maxDim);
     _drawDustPatches(canvas, cx, cy, maxDim);
@@ -93,6 +92,50 @@ class _GalaxyPainter extends CustomPainter {
     _drawArmStars(canvas, cx, cy, maxDim);
     _drawCoreStars(canvas, cx, cy, maxDim);
     _drawFieldStars(canvas, w, h);
+    _drawRandomJapanese(canvas, w, h, t);
+  }
+
+  static const _japaneseChars = 'あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをんアイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン';
+
+  static const _colorPalette = [
+    Color(0xFFf472b6),
+    Color(0xFFa78bfa),
+    Color(0xFF38bdf8),
+    Color(0xFF34d399),
+    Color(0xFFfbbf24),
+    Color(0xFFfb923c),
+    Color(0xFFc084fc),
+    Color(0xFF67e8f9),
+  ];
+
+  void _drawRandomJapanese(Canvas canvas, double w, double h, double t) {
+    const flashWindow = 0.12;
+    final phase = (t / flashWindow).floor();
+    final inFlash = (t % flashWindow) < flashWindow * 0.6;
+    if (!inFlash) return;
+    final rnd = math.Random(phase);
+    final charCount = 4 + rnd.nextInt(8);
+    for (int i = 0; i < charCount; i++) {
+      final idx = rnd.nextInt(_japaneseChars.length);
+      final char = _japaneseChars[idx];
+      final x = rnd.nextDouble() * (w - 80) + 20;
+      final y = rnd.nextDouble() * (h - 80) + 20;
+      final size = 18.0 + rnd.nextDouble() * 22;
+      final color = _colorPalette[rnd.nextInt(_colorPalette.length)];
+      final opacity = 0.75 + rnd.nextDouble() * 0.25;
+      final tp = TextPainter(
+        text: TextSpan(
+          text: char,
+          style: TextStyle(
+            fontSize: size,
+            color: color.withOpacity(opacity),
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      tp.paint(canvas, Offset(x, y));
+    }
   }
 
   void _drawBase(Canvas canvas, double w, double h) {
@@ -108,142 +151,6 @@ class _GalaxyPainter extends CustomPainter {
       stops: const [0.0, 0.5, 1.0],
     );
     canvas.drawRect(rect, Paint()..shader = grad.createShader(rect));
-  }
-
-  void _drawTunnel(Canvas canvas, double w, double h, double t) {
-    final cx = w * 0.5;
-    final cy = h * 0.5;
-    final len = math.max(w, h) * 1.8;
-    final halfW = 28.0 + 14.0 * (0.5 + 0.5 * math.sin(t * 2 * math.pi));
-    canvas.save();
-    canvas.translate(cx, cy);
-    canvas.rotate(-0.42);
-
-    // 不規則撕裂邊緣：多層鋸齒 + 尖刺 + 粗細變化，模擬真的被撕開
-    double tornEdge(double s, int seed, int side) {
-      final u = s * 50 + seed * 2.1;
-      final v = s * 23.7 + seed * 0.7;
-      final smooth = math.sin(u) * 0.25 + math.sin(v) * 0.2;
-      final saw = (u * 1.7).abs() % 1.0;
-      final spike = saw > 0.85 ? (saw - 0.85) * 6.0 : 0.0;
-      final crack = math.sin(s * 31 + seed) > 0.6 ? 0.15 * (side == 0 ? 1 : -1) : 0.0;
-      return halfW * (0.25 + smooth + spike * 0.35 + crack);
-    }
-    final path = Path();
-    final steps = 56;
-    for (int i = 0; i <= steps; i++) {
-      final s = i / steps;
-      final y = -len / 2 + s * len;
-      final xRight = halfW + tornEdge(s, i, 1);
-      if (i == 0) path.moveTo(xRight, y);
-      else path.lineTo(xRight, y);
-    }
-    for (int i = steps; i >= 0; i--) {
-      final s = i / steps;
-      final y = -len / 2 + s * len;
-      final xLeft = -halfW - tornEdge(s, i + 33, 0);
-      path.lineTo(xLeft, y);
-    }
-    path.close();
-
-    // 黑洞感：徑向漸層，中心極黑、邊緣深紫
-    final riftRect = Rect.fromCenter(center: Offset.zero, width: halfW * 2.5, height: len * 1.2);
-    final blackHolePaint = Paint()
-      ..shader = RadialGradient(
-        center: Alignment.center,
-        radius: 1.0,
-        colors: const [
-          Color(0xFF000000),
-          Color(0xFF020008),
-          Color(0xFF0a0018),
-          Color(0xFF180828),
-          Color(0xFF200a30),
-        ],
-        stops: const [0.0, 0.25, 0.5, 0.75, 1.0],
-      ).createShader(riftRect);
-    canvas.drawPath(path, blackHolePaint);
-
-    // 事件視界：裂縫中心的小橢圓，純黑
-    final ehW = halfW * 0.85;
-    final ehH = len * 0.1;
-    canvas.drawOval(Rect.fromCenter(center: Offset.zero, width: ehW, height: ehH), Paint()..color = const Color(0xFF000000));
-
-    // 撕裂邊緣：改為偏深色的能量縫隙，不再是螢光綠
-    final glowStroke = Paint()
-      ..color = const Color(0xFF363a70).withOpacity(0.75)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 6
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6);
-    final coreStroke = Paint()
-      ..color = const Color(0xFFb8b8ff).withOpacity(0.55)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2;
-    canvas.drawPath(path, glowStroke);
-    canvas.drawPath(path, coreStroke);
-
-    // 雷鳴交加：裂縫兩側的閃電，隨時間閃爍
-    _drawLightningAlongRift(canvas, len, halfW, t);
-
-    canvas.restore();
-  }
-
-  void _drawLightningAlongRift(Canvas canvas, double len, double halfW, double t) {
-    final boltCount = 12;
-    for (int b = 0; b < boltCount; b++) {
-      final phase = (t * 5 + b * 0.4) % 1.0;
-      final flash = phase < 0.18 || (phase > 0.45 && phase < 0.6);
-      if (!flash) continue;
-      final side = b % 2;
-      final along = 0.15 + 0.7 * (b / boltCount) + 0.05 * math.sin(t * 7 + b);
-      final baseY = -len / 2 + along * len;
-      final baseX = (side == 0) ? (-halfW - 12) : (halfW + 12);
-      final path = Path()..moveTo(baseX, baseY);
-      var x = baseX;
-      var y = baseY;
-      final segs = 7 + (b % 4);
-      final dir = side == 0 ? 1.0 : -1.0;
-      for (int i = 1; i <= segs; i++) {
-        x += dir * (18 + (i % 3) * 14) + math.sin(t * 3 + b + i) * 8;
-        y += 25 + math.sin(t * 2 + i) * 15;
-        path.lineTo(x, y);
-      }
-      // 第一條分岔
-      final branchY1 = baseY + 35 + math.sin(t + b) * 20;
-      path.moveTo(baseX + dir * 10, baseY + 20);
-      path.lineTo(baseX + dir * 35 + math.sin(t) * 10, branchY1);
-
-      // 第二條分岔，讓畫面更像雷網
-      final midY = baseY + (len * 0.12);
-      path.moveTo(baseX + dir * 5, midY);
-      path.lineTo(baseX + dir * 32 + math.sin(t * 1.7 + b) * 14, midY + 40);
-
-      // 多彩閃電顏色
-      const glowPalette = [
-        Color(0xFF80e0ff),
-        Color(0xFFff9dff),
-        Color(0xFF9be6ff),
-        Color(0xFFffe08a),
-      ];
-      const corePalette = [
-        Colors.white,
-        Color(0xFFfdf5ff),
-        Color(0xFFe0fbff),
-      ];
-      final glowColor = glowPalette[b % glowPalette.length].withOpacity(0.75);
-      final coreColor = corePalette[b % corePalette.length].withOpacity(0.96);
-
-      final core = Paint()
-        ..color = coreColor
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.1;
-      final glow = Paint()
-        ..color = glowColor
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 6.5
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8);
-      canvas.drawPath(path, glow);
-      canvas.drawPath(path, core);
-    }
   }
 
   void _drawNebulaGlow(Canvas canvas, double cx, double cy, double maxDim) {
@@ -276,7 +183,7 @@ class _GalaxyPainter extends CustomPainter {
   }
 
   void _drawSpiralArms(Canvas canvas, double cx, double cy, double maxDim) {
-    final maxR = maxDim * 0.24;
+    final maxR = maxDim * 0.58;
     final baseRotation = -t * _twoPi;
     for (int arm = 0; arm < _armCount; arm++) {
       final baseAngle = (arm / _armCount) * _twoPi + baseRotation;
@@ -313,7 +220,7 @@ class _GalaxyPainter extends CustomPainter {
   }
 
   void _drawDustPatches(Canvas canvas, double cx, double cy, double maxDim) {
-    final maxR = maxDim * 0.5;
+    final maxR = maxDim * 0.58;
     for (int i = 0; i < _dustPatches; i++) {
       final progress = (i * 0.0041 + 0.02).abs() % 0.92;
       final angle = (i * 0.61 - t * _twoPi) % _twoPi;
@@ -388,7 +295,7 @@ class _GalaxyPainter extends CustomPainter {
   }
 
   void _drawArmStars(Canvas canvas, double cx, double cy, double maxDim) {
-    final maxR = maxDim * 0.5;
+    final maxR = maxDim * 0.58;
     final baseRotation = -t * _twoPi;
     for (int i = 0; i < _armStars; i++) {
       final progress = (i * 0.0007 + 0.05).abs() % 0.95;
