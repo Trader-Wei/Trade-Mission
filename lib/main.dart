@@ -964,7 +964,7 @@ Future<List<Candle>> _fetchKlines(String symbol, [String interval = '15m']) asyn
 
   try {
 
-    final res = await http.get(Uri.parse('https://fapi.binance.com/fapi/v1/klines?symbol=$symbol&interval=$interval&limit=60'));
+    final res = await http.get(Uri.parse('https://fapi.binance.com/fapi/v1/klines?symbol=$symbol&interval=$interval&limit=40'));
 
     if (res.statusCode != 200) return [];
 
@@ -1324,6 +1324,16 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
     await _secureStorage.write(key: _apiKeyStorageKey, value: key);
 
     await _secureStorage.write(key: _apiSecretStorageKey, value: secret);
+
+  }
+
+  Future<void> _clearApiCredentials() async {
+
+    await _secureStorage.delete(key: _apiExchangeKey);
+
+    await _secureStorage.delete(key: _apiKeyStorageKey);
+
+    await _secureStorage.delete(key: _apiSecretStorageKey);
 
   }
 
@@ -1756,13 +1766,37 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
               ),
 
-            ],
+                const SizedBox(height: 12),
+
+                OutlinedButton.icon(
+
+                  icon: const Icon(Icons.link_off, size: 18),
+
+                  label: const Text('取消 API 連接'),
+
+                  style: OutlinedButton.styleFrom(foregroundColor: Colors.orange.shade300),
+
+                  onPressed: () async {
+
+                    await _clearApiCredentials();
+
+                    if (!ctx.mounted) return;
+
+                    Navigator.pop(ctx);
+
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已取消 API 連接'), behavior: SnackBarBehavior.floating));
+
+                  },
+
+                ),
+
+              ],
+
+            ),
 
           ),
 
         ),
-
-      ),
 
       ),
 
