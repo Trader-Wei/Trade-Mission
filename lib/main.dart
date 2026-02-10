@@ -994,6 +994,31 @@ CartesianChartAnnotation _chartLine(dynamic p, Color c, String t) => CartesianCh
 
 );
 
+/// 1H: 每 8 小時一格；15m: 480 分(=8h)；4H: 8 小時
+DateTimeAxis _dateTimeAxisForInterval(String interval) {
+
+  switch (interval) {
+
+    case '1h':
+
+      return DateTimeAxis(interval: 8.0, intervalType: DateTimeIntervalType.hours);
+
+    case '15m':
+
+      return DateTimeAxis(interval: 480.0, intervalType: DateTimeIntervalType.minutes);
+
+    case '4h':
+
+      return DateTimeAxis(interval: 8.0, intervalType: DateTimeIntervalType.hours);
+
+    default:
+
+      return DateTimeAxis(interval: 8.0, intervalType: DateTimeIntervalType.hours);
+
+  }
+
+}
+
 Widget _chartBox(String l, String v) => Column(children: [Text(l, style: const TextStyle(fontSize: 10, color: Colors.grey)), Text(v)]);
 
 Widget _chartOiChip(String period, double? change) {
@@ -1008,7 +1033,8 @@ Widget _chartOiChip(String period, double? change) {
 
 }
 
-Widget _chartOiGrid(List<String> periods, Map<String, double?> oiChanges) {
+Widget _chartOiGrid(List<String> periods, Map<String, double?> oiChanges, {bool isPortrait = false}) {
+  final rowSpacing = isPortrait ? 1.5 : 1.0;
   return Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
@@ -1019,12 +1045,9 @@ Widget _chartOiGrid(List<String> periods, Map<String, double?> oiChanges) {
         child: GridView.count(
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
-          // 3 欄，行數依內容自動往下長
           crossAxisCount: 3,
-          // 行距更小
-          mainAxisSpacing: 1,
+          mainAxisSpacing: rowSpacing,
           crossAxisSpacing: 12,
-          // 加大寬高比，讓每格更扁，行距自然縮小
           childAspectRatio: 9.0,
           children: periods
               .map((p) => Align(
@@ -1038,7 +1061,7 @@ Widget _chartOiGrid(List<String> periods, Map<String, double?> oiChanges) {
   );
 }
 
-Widget _chartPositionSummary(Map<String, dynamic> pos) {
+Widget _chartPositionSummary(Map<String, dynamic> pos, {bool isPortrait = false}) {
   final uValue = toD(pos['uValue']);
   final lev = pos['leverage'];
   final vol24h = pos['stats24hVol'];
@@ -1107,9 +1130,8 @@ Widget _chartPositionSummary(Map<String, dynamic> pos) {
         child: GridView.count(
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
-          // 同樣採用 3×3 風格
           crossAxisCount: 3,
-          mainAxisSpacing: 1,
+          mainAxisSpacing: isPortrait ? 1.5 : 1.0,
           crossAxisSpacing: 12,
           childAspectRatio: 9.0,
           children: items.entries
@@ -3604,41 +3626,69 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
   void _showChartDialog({required Map<String, dynamic> pos, required String symbol, required List<Candle> candles, required Map<String, double?> oiChanges, required List<String> oiPeriods, required bool isSettled}) {
 
-    showDialog(context: context, builder: (ctx) => AlertDialog(
+    showDialog(context: context, builder: (ctx) {
 
-      backgroundColor: const Color(0xFF111111),
+      final size = MediaQuery.of(ctx).size;
 
-      content: SizedBox(
+      final isPortrait = MediaQuery.of(ctx).orientation == Orientation.portrait;
 
-        width: 990, height: 726,
+      final double dialogW = isPortrait ? size.width - 24 : 1100;
 
-        child: _ChartDialogContent(
+      final double dialogH = isPortrait ? (800.0 * 0.75) : 800.0;
 
-          pos: pos, symbol: symbol, initialCandles: candles, oiChanges: oiChanges, oiPeriods: oiPeriods, isSettled: isSettled,
+      return AlertDialog(
 
-          buildContent: (interval, list) => isSettled
+        backgroundColor: const Color(0xFF111111),
 
-              ? _buildChartContent(pos: pos, symbol: symbol, candles: list, oiChanges: oiChanges, oiPeriods: oiPeriods, interval: interval)
+        content: SizedBox(
 
-              : _DetailChartLive(pos: pos, symbol: symbol, initialCandles: list, initialOiChanges: Map.from(oiChanges), oiPeriods: oiPeriods, interval: interval),
+          width: dialogW,
+
+          height: dialogH,
+
+          child: _ChartDialogContent(
+
+            pos: pos,
+
+            symbol: symbol,
+
+            initialCandles: candles,
+
+            oiChanges: oiChanges,
+
+            oiPeriods: oiPeriods,
+
+            isSettled: isSettled,
+
+            buildContent: (bctx, interval, list) => isSettled
+
+                ? _buildChartContent(context: bctx, pos: pos, symbol: symbol, candles: list, oiChanges: oiChanges, oiPeriods: oiPeriods, interval: interval)
+
+                : _DetailChartLive(pos: pos, symbol: symbol, initialCandles: list, initialOiChanges: Map.from(oiChanges), oiPeriods: oiPeriods, interval: interval, isPortrait: MediaQuery.of(bctx).orientation == Orientation.portrait),
+
+          ),
 
         ),
 
-      ),
+      );
 
-    ));
+    });
 
   }
 
-  Widget _buildChartContent({required Map<String, dynamic> pos, required String symbol, required List<Candle> candles, required Map<String, double?> oiChanges, required List<String> oiPeriods, String interval = '15m'}) {
+  Widget _buildChartContent({required BuildContext context, required Map<String, dynamic> pos, required String symbol, required List<Candle> candles, required Map<String, double?> oiChanges, required List<String> oiPeriods, String interval = '15m'}) {
+
+    final isPortrait = MediaQuery.of(context).orientation == Orientation.portrait;
+
+    final axis = _dateTimeAxisForInterval(interval);
 
     return Column(children: [
 
       Text("$symbol $interval K線${pos['candles'] != null && (pos['candles'] as List).isNotEmpty ? '（結算快照）' : ''}", style: const TextStyle(color: Color(0xFFFFC0CB), fontSize: 20)),
 
-      Expanded(child: SfCartesianChart(
+      Expanded(flex: isPortrait ? 3 : 4, child: SfCartesianChart(
 
-        primaryXAxis: DateTimeAxis(),
+        primaryXAxis: axis,
 
         series: <CartesianSeries<Candle, DateTime>>[
 
@@ -3666,7 +3716,8 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
       )),
 
-      // 底部資訊區（OI + 倉位摘要）固定高度，可捲動，避免壓縮圖表
+      if (isPortrait) const Expanded(flex: 1, child: SizedBox.shrink()),
+
       SizedBox(
         height: 140,
         child: Scrollbar(
@@ -3680,9 +3731,9 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
                 if (oiChanges.isNotEmpty && oiChanges.values.any((v) => v != null))
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 8),
-                    child: _chartOiGrid(oiPeriods, oiChanges),
+                    child: _chartOiGrid(oiPeriods, oiChanges, isPortrait: isPortrait),
                   ),
-                _chartPositionSummary(pos),
+                _chartPositionSummary(pos, isPortrait: isPortrait),
               ],
             ),
           ),
@@ -4213,7 +4264,7 @@ class _ChartDialogContent extends StatefulWidget {
 
   final bool isSettled;
 
-  final Widget Function(String interval, List<Candle> candles) buildContent;
+  final Widget Function(BuildContext context, String interval, List<Candle> candles) buildContent;
 
   const _ChartDialogContent({required this.pos, required this.symbol, required this.initialCandles, required this.oiChanges, required this.oiPeriods, required this.isSettled, required this.buildContent});
 
@@ -4285,7 +4336,7 @@ class _ChartDialogContentState extends State<_ChartDialogContent> {
 
       const SizedBox(height: 8),
 
-      Expanded(child: widget.buildContent(_selectedInterval, widget.isSettled ? _candles : widget.initialCandles)),
+      Expanded(child: widget.buildContent(context, _selectedInterval, widget.isSettled ? _candles : widget.initialCandles)),
 
     ]);
 
@@ -4307,7 +4358,9 @@ class _DetailChartLive extends StatefulWidget {
 
   final String interval;
 
-  const _DetailChartLive({required this.pos, required this.symbol, required this.initialCandles, required this.initialOiChanges, required this.oiPeriods, required this.interval});
+  final bool isPortrait;
+
+  const _DetailChartLive({required this.pos, required this.symbol, required this.initialCandles, required this.initialOiChanges, required this.oiPeriods, required this.interval, this.isPortrait = false});
 
   @override
 
@@ -4383,9 +4436,9 @@ class _DetailChartLiveState extends State<_DetailChartLive> {
 
       Text("${widget.symbol} ${widget.interval} K線（每 $_intervalSec 秒更新）", style: const TextStyle(color: Color(0xFFFFC0CB), fontSize: 20)),
 
-      Expanded(child: SfCartesianChart(
+      Expanded(flex: widget.isPortrait ? 3 : 4, child: SfCartesianChart(
 
-        primaryXAxis: DateTimeAxis(),
+        primaryXAxis: _dateTimeAxisForInterval(widget.interval),
 
         series: <CartesianSeries<Candle, DateTime>>[
 
@@ -4413,7 +4466,8 @@ class _DetailChartLiveState extends State<_DetailChartLive> {
 
       )),
 
-      // 底部資訊區（OI + 倉位摘要）固定高度，可捲動，避免壓縮圖表
+      if (widget.isPortrait) const Expanded(flex: 1, child: SizedBox.shrink()),
+
       SizedBox(
         height: 140,
         child: Scrollbar(
@@ -4426,9 +4480,9 @@ class _DetailChartLiveState extends State<_DetailChartLive> {
                 const Divider(),
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 8),
-                  child: _chartOiGrid(widget.oiPeriods, oiChanges),
+                  child: _chartOiGrid(widget.oiPeriods, oiChanges, isPortrait: widget.isPortrait),
                 ),
-                _chartPositionSummary(pos),
+                _chartPositionSummary(pos, isPortrait: widget.isPortrait),
               ],
             ),
           ),
