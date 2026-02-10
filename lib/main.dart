@@ -1035,6 +1035,7 @@ Widget _chartOiChip(String period, double? change) {
 
 Widget _chartOiGrid(List<String> periods, Map<String, double?> oiChanges, {bool isPortrait = false}) {
   final rowSpacing = isPortrait ? 1.5 : 1.0;
+  final aspectRatio = isPortrait ? 5.0 : 9.0;
   return Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
@@ -1048,7 +1049,7 @@ Widget _chartOiGrid(List<String> periods, Map<String, double?> oiChanges, {bool 
           crossAxisCount: 3,
           mainAxisSpacing: rowSpacing,
           crossAxisSpacing: 12,
-          childAspectRatio: 9.0,
+          childAspectRatio: aspectRatio,
           children: periods
               .map((p) => Align(
                     alignment: Alignment.centerLeft,
@@ -1064,19 +1065,8 @@ Widget _chartOiGrid(List<String> periods, Map<String, double?> oiChanges, {bool 
 Widget _chartPositionSummary(Map<String, dynamic> pos, {bool isPortrait = false}) {
   final uValue = toD(pos['uValue']);
   final lev = pos['leverage'];
-  final vol24h = pos['stats24hVol'];
   final funding = pos['statsFundingRate'];
   final ft = pos['statsFundingTime'];
-
-  String _fmtVol24h(dynamic v) {
-    if (v == null) return '--';
-    final d = v is num ? v.toDouble() : double.tryParse(v.toString());
-    if (d == null) return '--';
-    if (d >= 1e9) return '${(d / 1e9).toStringAsFixed(2)}B';
-    if (d >= 1e6) return '${(d / 1e6).toStringAsFixed(2)}M';
-    if (d >= 1e3) return '${(d / 1e3).toStringAsFixed(2)}K';
-    return d.toStringAsFixed(2);
-  }
 
   String _fmtFunding(dynamic v) {
     if (v == null) return '--';
@@ -1107,18 +1097,34 @@ Widget _chartPositionSummary(Map<String, dynamic> pos, {bool isPortrait = false}
     return ((priceDiff / ent) * 100 * levNum * ratio).toStringAsFixed(2);
   }
 
-  // 總值 = 保證金 × 槓桿
   final levNum = (lev is num) ? lev.toInt() : int.tryParse(lev.toString()) ?? 1;
   final totalValue = uValue * levNum;
+  final pnl = _pnlAmount(pos);
+  final roiStr = _fmtRoi();
+  final roiVal = double.tryParse(roiStr);
+  final fundingVal = funding is num ? funding.toDouble() : double.tryParse(funding.toString());
 
-  final items = <String, String>{
-    '倉位價值': "${totalValue.toStringAsFixed(2)}U",
-    '24h Vol': _fmtVol24h(vol24h),
-    'Funding': _fmtFunding(funding),
-    '時間標記': _fmtTimeMs(ft),
-    'ROI': "${_fmtRoi()}%",
-  };
+  Widget _summaryChip(String label, String value, {bool? isPositive}) {
+    final color = isPositive == null ? Colors.grey : (isPositive ? Colors.green : Colors.red);
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Text(
+        '$label: $value',
+        style: TextStyle(fontSize: 11, fontWeight: FontWeight.w500, color: color),
+      ),
+    );
+  }
 
+  final chips = <Widget>[
+    _summaryChip('開倉點位', '${toD(pos['entry'])}'),
+    _summaryChip('倉位價值', '${totalValue.toStringAsFixed(2)}U'),
+    _summaryChip('時間標記', _fmtTimeMs(ft)),
+    _summaryChip('Funding', _fmtFunding(funding), isPositive: fundingVal != null ? fundingVal >= 0 : null),
+    _summaryChip('PNL', '${pnl >= 0 ? '+' : ''}${pnl.toStringAsFixed(2)}U', isPositive: pnl >= 0),
+    _summaryChip('ROI', '${roiVal != null && roiVal >= 0 ? '+' : ''}$roiStr%', isPositive: roiVal != null ? roiVal >= 0 : null),
+  ];
+
+  final aspectRatio = isPortrait ? 5.0 : 9.0;
   return Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
@@ -1133,16 +1139,8 @@ Widget _chartPositionSummary(Map<String, dynamic> pos, {bool isPortrait = false}
           crossAxisCount: 3,
           mainAxisSpacing: isPortrait ? 1.5 : 1.0,
           crossAxisSpacing: 12,
-          childAspectRatio: 9.0,
-          children: items.entries
-              .map((e) => Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text(
-                      "${e.key}: ${e.value}",
-                      style: const TextStyle(fontSize: 11, color: Colors.grey),
-                    ),
-                  ))
-              .toList(),
+          childAspectRatio: aspectRatio,
+          children: chips,
         ),
       ),
     ],
@@ -3496,7 +3494,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
         final subtitle = isSettled
 
-            ? "盈利: ${_pnlAmount(pos) >= 0 ? '+' : ''}${_pnlAmount(pos).toStringAsFixed(2)} U | RR: ${_rrValue(pos) != null ? _rrValue(pos)!.toStringAsFixed(2) : '--'} | ROI: ${calculateROI(pos)}% | 結算: ${_fmtEntryTime(pos['settledAt'])} · 持倉 ${_fmtDuration(pos['entryTime'], pos['settledAt'])}${pos['status'].toString().contains('止盈') && pos['hitTp'] != null ? ' · ${_tpLabel(pos['hitTp'].toString(), pos)}' : ''} | ${_statusDisplay(pos['status'], pos)}"
+            ? "盈利: ${_pnlAmount(pos) >= 0 ? '+' : ''}${_pnlAmount(pos).toStringAsFixed(2)} U | RR: ${_rrValue(pos) != null ? _rrValue(pos)!.toStringAsFixed(2) : '--'} | ROI: ${calculateROI(pos)}% |平倉: ${_fmtEntryTime(pos['settledAt'])} · 持倉 ${_fmtDuration(pos['entryTime'], pos['settledAt'])}${pos['status'].toString().contains('止盈') && pos['hitTp'] != null ? ' · ${_tpLabel(pos['hitTp'].toString(), pos)}' : ''} | ${_statusDisplay(pos['status'], pos)}"
 
             : "ROI: ${calculateROI(pos)}% | 進場: ${_fmtEntryTime(pos['entryTime'])} | ${_statusDisplay(pos['status'], pos)}";
 
@@ -3696,7 +3694,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
     return Column(children: [
 
-      Text("$symbol $interval K線${pos['candles'] != null && (pos['candles'] as List).isNotEmpty ? '（結算快照）' : ''}", style: const TextStyle(color: Color(0xFFFFC0CB), fontSize: 20)),
+      Text("$symbol $interval K線${pos['candles'] != null && (pos['candles'] as List).isNotEmpty ? '（Close snapshot）' : ''}", style: const TextStyle(color: Color(0xFFFFC0CB), fontSize: 20)),
 
       Expanded(flex: shrinkChart ? 3 : 4, child: SfCartesianChart(
 
@@ -3731,21 +3729,24 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
       shrinkChart
           ? Expanded(
               flex: 1,
-              child: Scrollbar(
-                thumbVisibility: true,
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.only(top: 4),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Divider(),
-                      if (oiChanges.isNotEmpty && oiChanges.values.any((v) => v != null))
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 8),
-                          child: _chartOiGrid(oiPeriods, oiChanges, isPortrait: isPortrait),
-                        ),
-                      _chartPositionSummary(pos, isPortrait: isPortrait),
-                    ],
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(minHeight: 200),
+                child: Scrollbar(
+                  thumbVisibility: true,
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Divider(),
+                        if (oiChanges.isNotEmpty && oiChanges.values.any((v) => v != null))
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 8),
+                            child: _chartOiGrid(oiPeriods, oiChanges, isPortrait: isPortrait),
+                          ),
+                        _chartPositionSummary(pos, isPortrait: isPortrait),
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -3794,7 +3795,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
         const Divider(),
 
-        const Text("結算紀錄", style: TextStyle(fontSize: 12, color: Colors.grey, fontWeight: FontWeight.bold)),
+        const Text("Closing log", style: TextStyle(fontSize: 12, color: Colors.grey, fontWeight: FontWeight.bold)),
 
         const SizedBox(height: 6),
 
@@ -3810,7 +3811,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
           Column(children: [
 
-            const Text("RR 值", style: TextStyle(fontSize: 11, color: Colors.grey)),
+            const Text("RR ", style: TextStyle(fontSize: 11, color: Colors.grey)),
 
             Text(_rrValue(pos) != null ? _rrValue(pos)!.toStringAsFixed(2) : '--', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: _rrValue(pos) != null && _rrValue(pos)! >= 0 ? Colors.green : (_rrValue(pos) != null ? Colors.red : Colors.white))),
 
@@ -3822,7 +3823,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
         Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [
 
-          _chartBox("結算時間", _fmtEntryTime(pos['settledAt'])),
+          _chartBox("平倉時間", _fmtEntryTime(pos['settledAt'])),
 
           _chartBox("持倉時長", _fmtDuration(pos['entryTime'], pos['settledAt'])),
 
@@ -4150,13 +4151,13 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
                 const SizedBox(width: 10),
 
-                Expanded(child: TextField(controller: cs['val'], decoration: const InputDecoration(labelText: "保證金 "), keyboardType: TextInputType.number)),
+                Expanded(child: TextField(controller: cs['val'], decoration: const InputDecoration(labelText: "保證金"), keyboardType: TextInputType.number)),
 
               ]),
 
               TextField(controller: cs['ent'], decoration: const InputDecoration(labelText: "進場價"), keyboardType: TextInputType.number),
 
-              if (isSettledEdit) TextField(controller: cs['settledPrice'], decoration: const InputDecoration(labelText: "結算價"), keyboardType: TextInputType.number),
+              if (isSettledEdit) TextField(controller: cs['settledPrice'], decoration: const InputDecoration(labelText: "平倉價"), keyboardType: TextInputType.number),
 
               const SizedBox(height: 8),
 
@@ -4470,7 +4471,7 @@ class _DetailChartLiveState extends State<_DetailChartLive> {
 
     return Column(children: [
 
-      Text("${widget.symbol} ${widget.interval} K線（每 $_intervalSec 秒更新）", style: const TextStyle(color: Color(0xFFFFC0CB), fontSize: 20)),
+      Text("${widget.symbol} ${widget.interval} K線", style: const TextStyle(color: Color(0xFFFFC0CB), fontSize: 20)),
 
       Expanded(flex: widget.shrinkChartHeight ? 3 : 4, child: SfCartesianChart(
 
@@ -4505,20 +4506,23 @@ class _DetailChartLiveState extends State<_DetailChartLive> {
       widget.shrinkChartHeight
           ? Expanded(
               flex: 1,
-              child: Scrollbar(
-                thumbVisibility: true,
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.only(top: 4),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Divider(),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 8),
-                        child: _chartOiGrid(widget.oiPeriods, oiChanges, isPortrait: widget.isPortrait),
-                      ),
-                      _chartPositionSummary(pos, isPortrait: widget.isPortrait),
-                    ],
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(minHeight: 200),
+                child: Scrollbar(
+                  thumbVisibility: true,
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Divider(),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          child: _chartOiGrid(widget.oiPeriods, oiChanges, isPortrait: widget.isPortrait),
+                        ),
+                        _chartPositionSummary(pos, isPortrait: widget.isPortrait),
+                      ],
+                    ),
                   ),
                 ),
               ),
