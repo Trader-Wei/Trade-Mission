@@ -70,10 +70,10 @@ class _GalaxyPainter extends CustomPainter {
 
   static const int _armCount = 8;
   static const int _armSegments = 80;
-  static const int _coreStars = 900;
-  static const int _armStars = 2400;
-  static const int _fieldStars = 1300;
-  static const int _dustPatches = 180;
+  static const int _coreStars = 1400;
+  static const int _armStars = 3200;
+  static const int _fieldStars = 2100;
+  static const int _dustPatches = 280;
   static const double _twoPi = 2 * 3.141592653589793;
 
   @override
@@ -92,6 +92,7 @@ class _GalaxyPainter extends CustomPainter {
     _drawArmStars(canvas, cx, cy, maxDim);
     _drawCoreStars(canvas, cx, cy, maxDim);
     _drawFieldStars(canvas, w, h);
+    _drawDistantStars(canvas, w, h);
     _drawRandomJapanese(canvas, w, h, t);
   }
 
@@ -251,11 +252,11 @@ class _GalaxyPainter extends CustomPainter {
       center: Alignment.center,
       radius: 1.0,
       colors: [
-        const Color(0xFFf8f0ff),
-        const Color(0xFFe8d8f8),
-        const Color(0xFFc0a8e8),
-        const Color(0xFF8060c0),
-        const Color(0xFF302050),
+        const Color(0xFFf8f0ff).withOpacity(0.15),
+        const Color(0xFFe8d8f8).withOpacity(0.15),
+        const Color(0xFFc0a8e8).withOpacity(0.15),
+        const Color(0xFF8060c0).withOpacity(0.15),
+        const Color(0xFF302050).withOpacity(0.15),
         Colors.transparent,
       ],
       stops: const [0.0, 0.2, 0.4, 0.6, 0.85, 1.0],
@@ -348,6 +349,20 @@ class _GalaxyPainter extends CustomPainter {
     }
   }
 
+  static const int _distantStars = 350;
+  void _drawDistantStars(Canvas canvas, double w, double h) {
+    for (int i = 0; i < _distantStars; i++) {
+      final x = ((i * 0.071 + 0.13) * (i % 13 + 1)).abs() % 1.0 * w;
+      final y = ((i * 0.053 + 0.19) * (i % 17 + 1)).abs() % 1.0 * h;
+      final brightness = 0.05 + (i % 7) / 7 * 0.25;
+      final size = 0.25 + (i % 2) * 0.2;
+      final paint = Paint()
+        ..color = Color.fromRGBO(255, 255, 255, brightness)
+        ..style = PaintingStyle.fill;
+      canvas.drawCircle(Offset(x, y), size, paint);
+    }
+  }
+
   @override
   bool shouldRepaint(covariant _GalaxyPainter oldDelegate) => oldDelegate.t != t;
 }
@@ -356,7 +371,7 @@ class _TwinklePainter extends CustomPainter {
   _TwinklePainter({required this.t});
 
   final double t;
-  static const int _starCount = 120;
+  static const int _starCount = 220;
 
   @override
   void paint(Canvas canvas, Size size) {

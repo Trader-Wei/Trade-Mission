@@ -193,6 +193,18 @@ String _statusDisplay(String? status, [dynamic pos]) {
 
   }
 
+  if (status.contains('完全平倉')) return '完全平倉';
+
+  if (status.contains('部分平倉')) {
+
+    final ratio = pos != null ? (toD(pos['exitRatioDisplay']) > 0 ? toD(pos['exitRatioDisplay']) : toD(pos['exitRatio'])) : 0;
+
+    if (ratio > 0 && ratio < 1) return '部分平倉 ${(ratio * 100).toInt()}%';
+
+    return '部分平倉';
+
+  }
+
   return status;
 
 }
@@ -368,9 +380,9 @@ int _calculateExp(Map<String, dynamic> pos) {
 
     exp += 10; // 止損也有經驗（學習經驗）
 
-  } else if (status.contains('手動出場')) {
+  } else if (status.contains('手動出場') || status.contains('完全平倉') || status.contains('部分平倉')) {
 
-    exp += 30; // 手動出場基礎經驗
+    exp += 30; // 手動/完全/部分平倉基礎經驗
 
     if (pnl > 0) exp += (pnl / 15).floor().clamp(0, 150);
 
@@ -426,7 +438,7 @@ Future<Map<String, dynamic>> _calculateStreaks(List<dynamic> positions) async {
 
     p['status']?.toString().contains('止損') == true || 
 
-    p['status']?.toString().contains('手動出場') == true).toList();
+    p['status']?.toString().contains('手動出場') == true || p['status']?.toString().contains('完全平倉') == true || p['status']?.toString().contains('部分平倉') == true).toList();
 
   // 連續盈利天數
 
@@ -543,6 +555,8 @@ const _apiSecretStorageKey = 'anya_api_secret';
 const Map<String, String> kSupportedExchanges = {
 
   'binance': 'Binance 合約',
+
+  'bingx': 'BingX 合約',
 
   'bittap': 'BitTap (bittap.com)',
 
@@ -689,6 +703,112 @@ Future<List<dynamic>?> _fetchBittapPositions(String apiKey, String apiSecret) as
       final sideStr = (m['side'] ?? m['positionSide'] ?? '').toString().toLowerCase();
 
       if (amt == 0 && (sideStr == 'short' || sideStr == 'long')) amt = toD(m['size'] ?? m['position'] ?? m['quantity'] ?? m['positionSize']);
+
+      if (sideStr == 'short' && amt > 0) amt = -amt;
+
+      if (amt == 0) continue;
+
+      final leverage = (m['leverage'] is num) ? (m['leverage'] as num).toInt() : int.tryParse(m['leverage']?.toString() ?? '') ?? 1;
+
+      out.add({
+
+        'symbol': symbol,
+
+        'entryPrice': entryPrice,
+
+        'markPrice': markPrice,
+
+        'leverage': leverage < 1 ? 1 : leverage,
+
+        'positionAmt': amt.toDouble(),
+
+      });
+
+    }
+
+    return out;
+
+  } catch (_) {
+
+    return null;
+
+  }
+
+}
+
+/// BingX 簽名：queryString 依參數排序後 HMAC-SHA256(secret) -> hex
+String _bingxSign(String secret, String queryString) {
+
+  final key = utf8.encode(secret);
+
+  final bytes = utf8.encode(queryString);
+
+  final hmacSha256 = Hmac(sha256, key);
+
+  final digest = hmacSha256.convert(bytes);
+
+  return digest.bytes.map((e) => e.toRadixString(16).padLeft(2, '0')).join();
+
+}
+
+/// BingX 合約持倉 API：/openApi/swap/v2/user/positions
+Future<List<dynamic>?> _fetchBingxPositions(String apiKey, String apiSecret) async {
+
+  try {
+
+    const baseUrl = 'https://open-api.bingx.com';
+
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+
+    final query = 'timestamp=$timestamp';
+
+    final signature = _bingxSign(apiSecret, query);
+
+    final uri = Uri.parse('$baseUrl/openApi/swap/v2/user/positions?$query&signature=$signature');
+
+    final res = await http.get(uri, headers: {
+
+      'X-BX-APIKEY': apiKey,
+
+      'X-BX-SIGN': signature,
+
+    });
+
+    if (res.statusCode != 200) return null;
+
+    final body = json.decode(res.body);
+
+    if (body is! Map) return null;
+
+    final code = body['code'];
+
+    if (code != 0 && code != '0') return null;
+
+    final rawList = body['data'] as List? ?? [];
+
+    final out = <Map<String, dynamic>>[];
+
+    for (final raw in rawList) {
+
+      final m = raw is Map ? Map<String, dynamic>.from(raw as Map) : <String, dynamic>{};
+
+      final symbolRaw = (m['symbol'] ?? '').toString();
+
+      if (symbolRaw.isEmpty) continue;
+
+      final symbol = symbolRaw.replaceAll('-', '');
+
+      final entryPrice = toD(m['avgPrice'] ?? m['entryPrice'] ?? m['openPrice']);
+
+      final markPrice = toD(m['markPrice'] ?? m['lastPrice'] ?? m['avgPrice'] ?? entryPrice);
+
+      if (entryPrice <= 0) continue;
+
+      num amt = toD(m['positionAmt'] ?? m['position_amt'] ?? m['size'] ?? m['position'] ?? m['quantity']);
+
+      final sideStr = (m['positionSide'] ?? m['position_side'] ?? m['side'] ?? '').toString().toLowerCase();
+
+      if (amt == 0 && (sideStr == 'short' || sideStr == 'long')) amt = toD(m['size'] ?? m['position'] ?? m['quantity']);
 
       if (sideStr == 'short' && amt > 0) amt = -amt;
 
@@ -1025,6 +1145,8 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
   Timer? _timer;
 
+  Timer? _syncTimer;
+
   List<dynamic> positions = [];
 
   bool isLoading = true;
@@ -1125,9 +1247,31 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
     _timer = Timer.periodic(const Duration(seconds: 5), (t) => _refresh());
 
+    _syncTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+
+      _syncPositionsFromApi().then((result) {
+
+        final (_, added) = result;
+
+        if (mounted && added > 0) setState(() {});
+
+      });
+
+    });
+
   }
 
+  @override
 
+  void dispose() {
+
+    _timer?.cancel();
+
+    _syncTimer?.cancel();
+
+    super.dispose();
+
+  }
 
   Future<void> _persistPositions() async {
 
@@ -1184,6 +1328,10 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
       list = await _fetchBinancePositionRisk(apiKey, apiSecret);
 
+    } else if (exchange == 'bingx') {
+
+      list = await _fetchBingxPositions(apiKey, apiSecret);
+
     } else if (exchange == 'bittap') {
 
       list = await _fetchBittapPositions(apiKey, apiSecret);
@@ -1198,9 +1346,151 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
       if (exchange == 'bittap') return ('無法取得 BitTap 倉位（請檢查 API 權限、網路或端點路徑）', 0);
 
+      if (exchange == 'bingx') return ('無法取得 BingX 倉位（請檢查 API 權限、網路或端點路徑）', 0);
+
       return ('無法取得倉位（請檢查 API 權限與網路）', 0);
 
     }
+
+    final apiOpenSymbols = <String>{};
+
+    final apiPositionMap = <String, Map<String, dynamic>>{};
+
+    for (final raw in list) {
+
+      final m = raw is Map ? raw : null;
+
+      if (m == null) continue;
+
+      final amt = toD(m['positionAmt'] ?? m['position_amt'] ?? m['size'] ?? m['position'] ?? m['quantity'] ?? 0);
+
+      if (amt == 0) continue;
+
+      final sym = (m['symbol'] ?? m['symbolName'] ?? '').toString().replaceAll('-', '');
+
+      if (sym.isEmpty) continue;
+
+      apiOpenSymbols.add(sym);
+
+      final entryPrice = toD(m['entryPrice'] ?? m['avgPrice'] ?? m['openPrice']);
+
+      final markPrice = toD(m['markPrice'] ?? m['lastPrice'] ?? m['avgPrice'] ?? entryPrice);
+
+      final leverage = (m['leverage'] is num) ? (m['leverage'] as num).toInt() : int.tryParse(m['leverage']?.toString() ?? '') ?? 1;
+
+      final notional = (amt.abs() * entryPrice);
+
+      final uValue = notional / (leverage < 1 ? 1 : leverage);
+
+      final sideStr = (m['positionSide'] ?? m['position_side'] ?? m['side'] ?? '').toString().toLowerCase();
+
+      num amtNum = amt;
+
+      if (sideStr == 'short' && amtNum > 0) amtNum = -amtNum;
+
+      apiPositionMap[sym] = {
+
+        'entryPrice': entryPrice,
+
+        'markPrice': markPrice,
+
+        'leverage': leverage < 1 ? 1 : leverage,
+
+        'uValue': uValue,
+
+        'side': amtNum > 0 ? 'long' : 'short',
+
+      };
+
+    }
+
+    int updatedCount = 0;
+
+    final closedPositions = <Map<String, dynamic>>[];
+
+    for (int i = 0; i < positions.length; i++) {
+
+      final p = positions[i];
+
+      if (p is! Map) continue;
+
+      final status = p['status']?.toString() ?? '';
+
+      if (!status.contains('監控中')) continue;
+
+      final symbol = (p['symbol'] ?? '').toString();
+
+      if (symbol.isEmpty) continue;
+
+      final apiData = apiPositionMap[symbol];
+
+      if (apiData != null) {
+
+        final oldU = toD(p['uValue']);
+
+        final newU = toD(apiData['uValue']);
+
+        if (newU < oldU && oldU > 0) {
+
+          final closedRatio = 1 - (newU / oldU);
+
+          final closedU = oldU * closedRatio;
+
+          final closedPortion = Map<String, dynamic>.from(p);
+
+          closedPortion['status'] = '部分平倉';
+
+          closedPortion['settledAt'] = DateTime.now().millisecondsSinceEpoch;
+
+          closedPortion['exitRatio'] = closedRatio;
+
+          closedPortion['exitRatioDisplay'] = closedRatio;
+
+          closedPortion['uValue'] = closedU;
+
+          closedPortion['current'] = apiData['markPrice'];
+
+          positions.add(closedPortion);
+
+          closedPositions.add(closedPortion);
+
+        }
+
+        p['entry'] = apiData['entryPrice'];
+
+        p['current'] = apiData['markPrice'];
+
+        p['leverage'] = apiData['leverage'];
+
+        p['uValue'] = apiData['uValue'];
+
+        p['side'] = apiData['side'];
+
+        updatedCount++;
+
+      } else {
+
+        p['status'] = '完全平倉';
+
+        p['settledAt'] = DateTime.now().millisecondsSinceEpoch;
+
+        p['exitRatio'] = 1.0;
+
+        closedPositions.add(Map<String, dynamic>.from(p));
+
+      }
+
+    }
+
+    if (closedPositions.isNotEmpty) {
+
+      await _persistPositions();
+
+      await _onHitManualExit(closedPositions);
+
+    }
+
+    if (updatedCount > 0) await _persistPositions();
 
     final watchingSymbols = positions.where((p) => p['status'].toString().contains('監控中')).map((p) => p['symbol'] as String).toSet();
 
@@ -1210,27 +1500,31 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
     for (final raw in list) {
 
-      final map = raw as Map;
+      final map = raw is Map ? raw : null;
 
-      final positionAmt = toD(map['positionAmt']);
+      if (map == null) continue;
+
+      final positionAmt = toD(map['positionAmt'] ?? map['position_amt'] ?? map['size'] ?? map['position'] ?? map['quantity'] ?? 0);
 
       if (positionAmt == 0) continue;
 
-      final symbol = map['symbol'] as String? ?? '';
+      final symbolRaw = (map['symbol'] ?? map['symbolName'] ?? '').toString();
+
+      final symbol = symbolRaw.replaceAll('-', '');
 
       if (symbol.isEmpty) continue;
 
       if (watchingSymbols.contains(symbol)) continue;
 
-      final entryPrice = toD(map['entryPrice']);
+      final entryPrice = toD(map['entryPrice'] ?? map['avgPrice'] ?? map['openPrice']);
 
-      final markPrice = toD(map['markPrice']);
+      final markPrice = toD(map['markPrice'] ?? map['lastPrice'] ?? map['avgPrice'] ?? entryPrice);
 
       final leverage = (map['leverage'] is num) ? (map['leverage'] as num).toInt() : int.tryParse(map['leverage']?.toString() ?? '') ?? 1;
 
       final notional = (positionAmt.abs() * entryPrice);
 
-      final uValue = notional / leverage;
+      final uValue = notional / (leverage < 1 ? 1 : leverage);
 
       final side = positionAmt > 0 ? 'long' : 'short';
 
@@ -1238,7 +1532,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
         'symbol': symbol,
 
-        'leverage': leverage,
+        'leverage': leverage < 1 ? 1 : leverage,
 
         'uValue': uValue,
 
@@ -1268,13 +1562,9 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
     }
 
-    await _persistPositions();
+    if (added > 0) await _persistPositions();
 
-    if (added == 0 && list.isNotEmpty) return ('目前無新倉位可加入（可能已存在同交易對監控中）', 0);
-
-    if (added == 0) return ('目前無持倉', 0);
-
-    return (null, added);
+    return (null, closedPositions.length + updatedCount + added);
 
   }
 
@@ -2188,7 +2478,64 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
   }
 
+  /// 手動出場反饋：依盈虧給予與止盈止損一致的反饋（經驗、每日任務、SnackBar）
+  Future<void> _onHitManualExit(List<Map<String, dynamic>> closedPositions) async {
 
+    if (closedPositions.isEmpty) return;
+
+    for (final p in closedPositions) {
+
+      final exp = _calculateExp(p);
+
+      if (exp > 0) await _addExp(exp, showNotification: false);
+
+    }
+
+    await _checkDailyTask('settle_task');
+
+    final streaks = await _calculateStreaks(positions);
+
+    final unlocked = await _getUnlocked();
+
+    final profitDays = streaks['profitDays'] ?? 0;
+
+    final lastPos = closedPositions.last;
+
+    final pnl = _pnlAmount(lastPos);
+
+    if (pnl > 0) {
+
+      if (profitDays >= 3 && !unlocked.contains('profit_streak_3')) await _unlock('profit_streak_3');
+
+      if (profitDays >= 7 && !unlocked.contains('profit_streak_7')) await _unlock('profit_streak_7');
+
+    }
+
+    final tasks = await _getDailyTasks();
+
+    final completed = Set<String>.from((tasks['completed'] as Map? ?? {}).keys.cast<String>());
+
+    if (completed.length == _dailyTasks.length && !unlocked.contains('daily_all')) await _unlock('daily_all');
+
+    if (!mounted) return;
+
+    final statusLabel = lastPos['status']?.toString().contains('完全平倉') == true ? '完全平倉' : (lastPos['status']?.toString().contains('部分平倉') == true ? '部分平倉' : '手動出場');
+
+    ScaffoldMessenger.of(context).showSnackBar(
+
+      SnackBar(
+
+        content: Text(pnl > 0 ? "やった！$statusLabel盈餘 ⭐️ (+${pnl.toStringAsFixed(2)} U)" : "ちー…$statusLabel虧損 ⚡️ (${pnl.toStringAsFixed(2)} U)"),
+
+        backgroundColor: pnl > 0 ? const Color(0xFF4CAF50) : const Color(0xFF757575),
+
+        behavior: SnackBarBehavior.floating,
+
+      ),
+
+    );
+
+  }
 
   void _showLevelAndAchievements() async {
 
@@ -2694,6 +3041,22 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
                 }
 
+                if (!mounted) return;
+
+                ScaffoldMessenger.of(context).showSnackBar(
+
+                  SnackBar(
+
+                    content: Text(pnl > 0 ? "やった！手動出場盈餘 ⭐️ (+${pnl.toStringAsFixed(2)} U)" : "ちー…手動出場虧損 ⚡️ (${pnl.toStringAsFixed(2)} U)"),
+
+                    backgroundColor: pnl > 0 ? const Color(0xFF4CAF50) : const Color(0xFF757575),
+
+                    behavior: SnackBarBehavior.floating,
+
+                  ),
+
+                );
+
               },
 
               child: const Text("確認出場"),
@@ -2716,7 +3079,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
     final s = p['status'].toString();
 
-    return s.contains('止盈') || s.contains('止損') || s.contains('手動出場');
+    return s.contains('止盈') || s.contains('止損') || s.contains('手動出場') || s.contains('完全平倉') || s.contains('部分平倉');
 
   }).toList();
 
@@ -3015,7 +3378,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
       final s = p['status'].toString();
 
-      if (s.contains('止盈') || (s.contains('手動出場') && _pnlAmount(p) > 0)) winCount++;
+      if (s.contains('止盈') || ((s.contains('手動出場') || s.contains('完全平倉') || s.contains('部分平倉')) && _pnlAmount(p) > 0)) winCount++;
 
     }
 
@@ -3195,7 +3558,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
     final symbol = pos['symbol'] as String;
 
-    final isSettled = pos['status'].toString().contains('止盈') || pos['status'].toString().contains('止損') || pos['status'].toString().contains('手動出場');
+    final isSettled = pos['status'].toString().contains('止盈') || pos['status'].toString().contains('止損') || pos['status'].toString().contains('手動出場') || pos['status'].toString().contains('完全平倉') || pos['status'].toString().contains('部分平倉');
 
     const oiPeriods = ['5m', '15m', '30m', '1h', '4h'];
 
@@ -3247,7 +3610,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
       content: SizedBox(
 
-        width: 900, height: 660,
+        width: 990, height: 726,
 
         child: _ChartDialogContent(
 
@@ -3654,7 +4017,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
     final entryTime = entryMs != null ? DateTime.fromMillisecondsSinceEpoch((entryMs is num) ? entryMs.toInt() : int.tryParse(entryMs.toString()) ?? 0) : DateTime.now();
 
-    final isSettledEdit = pos['status'].toString().contains('止盈') || pos['status'].toString().contains('止損') || pos['status'].toString().contains('手動出場');
+    final isSettledEdit = pos['status'].toString().contains('止盈') || pos['status'].toString().contains('止損') || pos['status'].toString().contains('手動出場') || pos['status'].toString().contains('完全平倉') || pos['status'].toString().contains('部分平倉');
 
     final cs = {
 
