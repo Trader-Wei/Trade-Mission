@@ -1431,8 +1431,9 @@ Widget _chartOiGrid(List<String> periods, Map<String, double?> oiChanges, {bool 
 }
 
 Widget _chartPositionSummary(Map<String, dynamic> pos, {bool isPortrait = false}) {
-  final uValue = toD(pos['uValue']);
-  final lev = pos['leverage'];
+  // 手機網頁版可能為字串或不同 key，統一用 toD 並支援 uvalue 小寫
+  final uValue = toD(pos['uValue'] ?? pos['uvalue'] ?? pos['margin'] ?? 0);
+  final lev = pos['leverage'] ?? pos['lev'];
   final funding = pos['statsFundingRate'];
   final ft = pos['statsFundingTime'];
 
@@ -1465,12 +1466,19 @@ Widget _chartPositionSummary(Map<String, dynamic> pos, {bool isPortrait = false}
     return ((priceDiff / ent) * 100 * levNum * ratio).toStringAsFixed(2);
   }
 
-  final levNum = (lev is num) ? lev.toInt() : int.tryParse(lev.toString()) ?? 1;
+  final levNum = (lev is num) ? lev.toInt() : int.tryParse(lev.toString().trim()) ?? 1;
   final totalValue = uValue * levNum;
   final pnl = _pnlAmount(pos);
   final roiStr = _fmtRoi();
   final roiVal = double.tryParse(roiStr);
   final fundingVal = funding is num ? funding.toDouble() : double.tryParse(funding.toString());
+
+  /// 倉位價值顯示：有總價值則顯示，否則若有保證金則顯示保證金，避免手機網頁版讀不到
+  String positionValueStr() {
+    if (totalValue > 0) return '${totalValue.toStringAsFixed(2)}U';
+    if (uValue > 0) return '${uValue.toStringAsFixed(2)}U (保證金)';
+    return '--';
+  }
 
   Widget _summaryChip(String label, String value, {bool? isPositive}) {
     final color = isPositive == null ? Colors.grey : (isPositive ? Colors.green : Colors.red);
@@ -1479,18 +1487,11 @@ Widget _chartPositionSummary(Map<String, dynamic> pos, {bool isPortrait = false}
       child: Text(
         '$label: $value',
         style: TextStyle(fontSize: 11, fontWeight: FontWeight.w500, color: color),
+        overflow: TextOverflow.ellipsis,
+        maxLines: 1,
       ),
     );
   }
-
-  final chips = <Widget>[
-    _summaryChip('開倉點位', '${toD(pos['entry'])}'),
-    _summaryChip('倉位價值', '${totalValue.toStringAsFixed(2)}U'),
-    _summaryChip('時間標記', _fmtTimeMs(ft)),
-    _summaryChip('Funding', _fmtFunding(funding), isPositive: fundingVal != null ? fundingVal >= 0 : null),
-    _summaryChip('PNL', '${pnl >= 0 ? '+' : ''}${pnl.toStringAsFixed(2)}U', isPositive: pnl >= 0),
-    _summaryChip('ROI', '${roiVal != null && roiVal >= 0 ? '+' : ''}$roiStr%', isPositive: roiVal != null ? roiVal >= 0 : null),
-  ];
 
   final aspectRatio = isPortrait ? 5.0 : 9.0;
   return Column(
@@ -1499,6 +1500,13 @@ Widget _chartPositionSummary(Map<String, dynamic> pos, {bool isPortrait = false}
       const SizedBox(height: 6),
       const Text("倉位摘要：", style: TextStyle(fontSize: 12, color: Colors.grey)),
       const SizedBox(height: 4),
+      Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(child: _summaryChip('倉位價值', positionValueStr())),
+        ],
+      ),
+      const SizedBox(height: 2),
       SizedBox(
         width: double.infinity,
         child: GridView.count(
@@ -1508,7 +1516,13 @@ Widget _chartPositionSummary(Map<String, dynamic> pos, {bool isPortrait = false}
           mainAxisSpacing: isPortrait ? 1.5 : 1.0,
           crossAxisSpacing: 12,
           childAspectRatio: aspectRatio,
-          children: chips,
+          children: [
+            _summaryChip('開倉點位', '${toD(pos['entry'])}'),
+            _summaryChip('時間標記', _fmtTimeMs(ft)),
+            _summaryChip('Funding', _fmtFunding(funding), isPositive: fundingVal != null ? fundingVal >= 0 : null),
+            _summaryChip('PNL', '${pnl >= 0 ? '+' : ''}${pnl.toStringAsFixed(2)}U', isPositive: pnl >= 0),
+            _summaryChip('ROI', '${roiVal != null && roiVal >= 0 ? '+' : ''}$roiStr%', isPositive: roiVal != null ? roiVal >= 0 : null),
+          ],
         ),
       ),
     ],
