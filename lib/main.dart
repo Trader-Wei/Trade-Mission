@@ -112,7 +112,18 @@ double _pnlAmount(Map<String, dynamic> p) {
 
   final ratio = toD(p['exitRatio']);
 
-  return ratio > 0 ? base * ratio : base;
+  final grossPnl = ratio > 0 ? base * ratio : base;
+
+  // 扣除手續費：進場 + 出場（依出場比例）
+  // 手續費率：優先使用倉位中的 feeRate，否則使用緩存的手續費率（使用者設定或預設值）
+  // 注意：這裡無法直接讀取 SharedPreferences（因為是同步函數），所以使用全局緩存值
+  final feeRate = p['feeRate'] != null ? toD(p['feeRate']) : _cachedTradingFeeRate;
+  final entryFee = u * feeRate; // 進場手續費
+  final exitRatio = ratio > 0 ? ratio : 1.0; // 出場比例，未結算時視為 100%
+  final exitFee = u * feeRate * exitRatio; // 出場手續費（依出場比例）
+  final totalFee = entryFee + exitFee;
+
+  return grossPnl - totalFee;
 
 }
 
@@ -205,6 +216,20 @@ String _statusDisplay(String? status, [dynamic pos]) {
   if (status.contains('止損')) return 'ちー…下次再來 ⚡️';
 
   if (status.contains('手動出場')) {
+
+    // 若為手動出場，依盈虧正負顯示止盈/止損的反饋
+    if (pos != null) {
+      try {
+        final pnl = _pnlAmount(pos is Map<String, dynamic> ? pos : Map<String, dynamic>.from(pos));
+        if (pnl > 0) {
+          return 'やった！Mission complete ⭐️'; // 止盈反饋
+        } else if (pnl < 0) {
+          return 'ちー…下次再來 ⚡️'; // 止損反饋
+        }
+      } catch (_) {
+        // 如果計算盈虧失敗，繼續使用原本的顯示邏輯
+      }
+    }
 
     final ratio = pos != null ? (toD(pos['exitRatioDisplay']) > 0 ? toD(pos['exitRatioDisplay']) : toD(pos['exitRatio'])) : 0;
 
@@ -511,12 +536,6 @@ Future<Map<String, dynamic>> _calculateStreaks(List<dynamic> positions) async {
 
   if (lastTp.isNotEmpty) {
 
-    final lastTpTime = lastTp.map((p) => p['settledAt']).whereType<dynamic>().map((s) => 
-
-      s is num ? s.toInt() : int.tryParse(s.toString()) ?? 0).reduce((a, b) => a > b ? a : b);
-
-    // final lastTpDate = DateTime.fromMillisecondsSinceEpoch(lastTpTime); // 未使用，註解掉
-
     final todayTp = lastTp.where((p) {
 
       final s = p['settledAt'];
@@ -572,6 +591,13 @@ const _apiKeyStorageKey = 'anya_api_key';
 const _apiSecretStorageKey = 'anya_api_secret';
 
 const _apiProxyUrlKey = 'anya_api_proxy_url';
+const _tradingFeeRateKey = 'anya_trading_fee_rate';
+
+/// 預設手續費率：0.055% (0.00055)，買賣皆為此費率
+const double _defaultTradingFeeRate = 0.00055;
+
+/// 緩存的手續費率（用於同步讀取，避免 _pnlAmount 需要異步）
+double _cachedTradingFeeRate = _defaultTradingFeeRate;
 
 /// 支援的交易所列舉，value 為下拉顯示名稱
 
@@ -706,7 +732,7 @@ Future<List<dynamic>?> _fetchBittapPositions(String apiKey, String apiSecret, {S
 
     for (final raw in rawList) {
 
-      final m = raw is Map ? Map<String, dynamic>.from(raw as Map) : <String, dynamic>{};
+      final m = raw is Map ? Map<String, dynamic>.from(raw) : <String, dynamic>{};
 
       final symbol = (m['symbol'] ?? m['symbolName'] ?? m['symbolId'] ?? '').toString();
 
@@ -810,7 +836,7 @@ Future<List<dynamic>?> _fetchBingxPositions(String apiKey, String apiSecret, {St
 
     for (final raw in rawList) {
 
-      final m = raw is Map ? Map<String, dynamic>.from(raw as Map) : <String, dynamic>{};
+      final m = raw is Map ? Map<String, dynamic>.from(raw) : <String, dynamic>{};
 
       final symbolRaw = (m['symbol'] ?? '').toString();
 
@@ -1087,12 +1113,12 @@ class _RefPoint {
 
 const List<String> _klineIntervals = ['15m', '1h', '4h'];
 
-/// K 線來源：Binance fapi。symbol 會自動去掉連字號以符合 Binance 格式。
+/// K 線來源：Binance fapi。symbol 會自動去掉連字號與空白以符合 Binance 格式。
 Future<List<Candle>> _fetchKlines(String symbol, [String interval = '15m', String? proxyUrl]) async {
 
   try {
 
-    final binanceSymbol = symbol.toString().replaceAll('-', '').toUpperCase();
+    final binanceSymbol = symbol.toString().trim().replaceAll('-', '').replaceAll(' ', '').toUpperCase();
     if (binanceSymbol.isEmpty) return [];
 
     final url = 'https://fapi.binance.com/fapi/v1/klines?symbol=$binanceSymbol&interval=$interval&limit=40';
@@ -1107,7 +1133,20 @@ Future<List<Candle>> _fetchKlines(String symbol, [String interval = '15m', Strin
 
     if (res.statusCode != 200) return [];
 
-    final raw = json.decode(res.body);
+    dynamic raw = json.decode(res.body);
+    // 自訂 Proxy 常見回傳格式：直接陣列 / { "data": [...] } / { "data": "[...]" } / { "body": "..." } / { "result": ... }
+    if (raw is Map) {
+      for (final key in ['data', 'body', 'result']) {
+        final v = raw[key];
+        if (v is List) { raw = v; break; }
+        if (v is String) {
+          try {
+            final decoded = json.decode(v);
+            if (decoded is List) { raw = decoded; break; }
+          } catch (_) {}
+        }
+      }
+    }
     if (raw is! List || raw.isEmpty) return [];
 
     final out = <Candle>[];
@@ -1535,6 +1574,15 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
     final prefs = await SharedPreferences.getInstance();
 
+    // 讀取手續費率並設置全局緩存
+    final rateStr = prefs.getString(_tradingFeeRateKey);
+    if (rateStr != null) {
+      final rate = double.tryParse(rateStr);
+      if (rate != null && rate >= 0 && rate <= 0.01) {
+        _cachedTradingFeeRate = rate;
+      }
+    }
+
     final data = prefs.getString('anya_pro_v2026_final');
 
     if (data != null) {
@@ -1689,6 +1737,39 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
   }
 
+  /// 讀取手續費率（從 SharedPreferences 或使用預設值）
+  Future<double> _getTradingFeeRate() async {
+
+    final prefs = await SharedPreferences.getInstance();
+
+    final rateStr = prefs.getString(_tradingFeeRateKey);
+
+    if (rateStr != null) {
+
+      final rate = double.tryParse(rateStr);
+
+      if (rate != null && rate >= 0 && rate <= 0.01) return rate; // 限制在 0-1% 之間
+
+    }
+
+    return _defaultTradingFeeRate;
+
+  }
+
+  /// 設定手續費率（0-1% 之間，例如 0.055% 輸入 0.00055）
+  Future<void> _setTradingFeeRate(double rate) async {
+
+    if (rate < 0 || rate > 0.01) return; // 限制在 0-1% 之間
+
+    final prefs = await SharedPreferences.getInstance();
+
+    await prefs.setString(_tradingFeeRateKey, rate.toString());
+
+    // 更新全局緩存的手續費率
+    _cachedTradingFeeRate = rate;
+
+  }
+
   Future<void> _clearApiCredentials() async {
 
     await _secureStorage.delete(key: _apiExchangeKey);
@@ -1732,7 +1813,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
     for (final raw in list) {
 
-      final m = raw is Map ? raw as Map : null;
+      final m = raw is Map ? raw : null;
 
       if (m == null) continue;
 
@@ -1797,14 +1878,44 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
       if (existing) continue;
 
+      // 讀取槓桿
       final leverage = (m['leverage'] is num) ? (m['leverage'] as num).toInt() : int.tryParse(m['leverage']?.toString() ?? '') ?? 20;
       final levNum = leverage < 1 ? 20 : leverage;
-      double notional = toD(m['notional'] ?? m['notionalValue'] ?? m['positionValue']);
-      if (notional <= 0) {
-        final amt = toD(m['positionAmt'] ?? m['position_amt'] ?? m['size'] ?? m['amount']);
-        final entryPrice = toD(m['entryPrice'] ?? m['avgPrice'] ?? m['openPrice'] ?? m['entry_price']);
-        if (amt != 0 && entryPrice > 0) notional = amt.abs() * entryPrice;
+
+      // 讀取進場價格
+      final entryPrice = toD(m['entryPrice'] ?? m['avgPrice'] ?? m['openPrice'] ?? m['entry_price'] ?? m['avgEntryPrice'] ?? 0);
+
+      // 讀取平倉價格（如果有）
+      final closePrice = toD(m['closePrice'] ?? m['close_price'] ?? m['exitPrice'] ?? m['exit_price'] ?? m['markPrice'] ?? m['mark_price'] ?? 0);
+
+      // 讀取方向資訊
+      final sideStr = (m['positionSide'] ?? m['position_side'] ?? m['side'] ?? m['direction'] ?? '').toString().toLowerCase();
+      final amt = toD(m['positionAmt'] ?? m['position_amt'] ?? m['size'] ?? m['amount'] ?? m['quantity'] ?? 0);
+      String side = 'long';
+      if (sideStr == 'short' || sideStr == 'sell' || sideStr == '做空') {
+        side = 'short';
+      } else if (amt < 0) {
+        side = 'short';
+      } else if (sideStr == 'long' || sideStr == 'buy' || sideStr == '做多' || sideStr.isEmpty) {
+        side = 'long';
       }
+
+      // 讀取倉位價值（嘗試多種可能的欄位名稱）
+      double notional = toD(m['notional'] ?? m['notionalValue'] ?? m['positionValue'] ?? m['position_value'] ?? m['notional_value'] ?? m['value'] ?? m['totalValue'] ?? 0);
+      
+      // 如果沒有直接的名義價值，嘗試從持倉數量和價格計算
+      if (notional <= 0) {
+        final positionAmt = toD(m['positionAmt'] ?? m['position_amt'] ?? m['size'] ?? m['amount'] ?? m['quantity'] ?? 0);
+        if (positionAmt != 0) {
+          // 優先使用進場價格，如果沒有則嘗試其他價格
+          final price = entryPrice > 0 ? entryPrice : (closePrice > 0 ? closePrice : toD(m['markPrice'] ?? m['mark_price'] ?? m['lastPrice'] ?? 0));
+          if (price > 0) {
+            notional = positionAmt.abs() * price;
+          }
+        }
+      }
+
+      // 計算保證金（uValue）
       final uValue = notional > 0 ? notional / levNum : 0.0;
 
       positions.add({
@@ -1815,9 +1926,9 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
         'uValue': uValue,
 
-        'entry': 0.0,
+        'entry': entryPrice > 0 ? entryPrice : 0.0,
 
-        'current': 0.0,
+        'current': closePrice > 0 ? closePrice : 0.0,
 
         'entryTime': settledAtMs - 3600000,
 
@@ -1833,7 +1944,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
         'status': '完全平倉',
 
-        'side': 'long',
+        'side': side,
 
         'manualEntry': false,
 
@@ -2056,7 +2167,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
         for (final raw in incomeList) {
 
-          final m = raw is Map ? raw as Map : null;
+          final m = raw is Map ? raw : null;
 
           if (m == null) continue;
 
@@ -2448,6 +2559,10 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
     final proxyController = TextEditingController(text: await _getApiProxyUrl() ?? '');
 
+    final feeRate = await _getTradingFeeRate();
+
+    final feeRateController = TextEditingController(text: (feeRate * 10000).toStringAsFixed(2)); // 顯示為基點（0.055% = 5.5 基點）
+
     String selectedExchange = savedExchange ?? 'binance';
 
     if (!mounted) return;
@@ -2552,6 +2667,28 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
                 ],
 
+                const SizedBox(height: 12),
+
+                TextField(
+
+                  controller: feeRateController,
+
+                  decoration: const InputDecoration(
+
+                    labelText: '手續費率（基點，例如 5.5 表示 0.055%）',
+
+                    border: OutlineInputBorder(),
+
+                    hintText: '預設：5.5（0.055%）',
+
+                    helperText: '買賣皆為此費率，用於計算盈虧時扣除手續費',
+
+                  ),
+
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+
+                ),
+
                 const SizedBox(height: 20),
 
                 Row(
@@ -2571,6 +2708,12 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
                           await _setApiCredentials(selectedExchange, keyController.text.trim(), secretController.text);
 
                           if (kIsWeb) await _setApiProxyUrl(proxyController.text.trim());
+
+                          // 儲存手續費率（將基點轉換為小數，例如 5.5 -> 0.00055）
+                          final feeRateBps = double.tryParse(feeRateController.text.trim());
+                          if (feeRateBps != null && feeRateBps >= 0 && feeRateBps <= 100) {
+                            await _setTradingFeeRate(feeRateBps / 10000);
+                          }
 
                           if (!ctx.mounted) return;
 
@@ -2601,6 +2744,12 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
                           await _setApiCredentials(selectedExchange, keyController.text.trim(), secretController.text);
 
                           if (kIsWeb) await _setApiProxyUrl(proxyController.text.trim());
+
+                          // 儲存手續費率（將基點轉換為小數，例如 5.5 -> 0.00055）
+                          final feeRateBps = double.tryParse(feeRateController.text.trim());
+                          if (feeRateBps != null && feeRateBps >= 0 && feeRateBps <= 100) {
+                            await _setTradingFeeRate(feeRateBps / 10000);
+                          }
 
                           Navigator.pop(ctx);
 
@@ -4586,7 +4735,7 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
               return isSettled
 
-                  ? _buildChartContent(context: bctx, pos: pos, symbol: symbol, candles: list, oiChanges: oiChanges, oiPeriods: oiPeriods, interval: interval, shrinkChart: shrinkChart)
+                  ? _buildSettledDataContent(context: bctx, pos: pos, symbol: symbol)
 
                   : _DetailChartLive(pos: pos, symbol: symbol, initialCandles: list, initialOiChanges: Map.from(oiChanges), oiPeriods: oiPeriods, interval: interval, isPortrait: isPortrait, shrinkChartHeight: shrinkChart, proxyUrl: proxy);
 
@@ -4602,13 +4751,219 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
   }
 
+  /// 結算頁：不顯示 K 線，只顯示紀錄的數據（基本／進場／出場／目標／盈虧／來源）
+  Widget _buildSettledDataContent({required BuildContext context, required Map<String, dynamic> pos, required String symbol}) {
+
+    final pnl = _pnlAmount(pos);
+    final roi = calculateROI(pos);
+    final rr = _rrValue(pos);
+    final isPortrait = MediaQuery.of(context).orientation == Orientation.portrait;
+    final crossCount = isPortrait ? 2 : 3;
+
+    // 方案二：區塊標題分色（淡藍／淡綠／淡橙／淡紫／盈虧綠紅／其他灰／筆記淡青）
+    const Color _secBasic = Color(0xFF7EC8E3);   // 基本-淡藍
+    const Color _secEntry = Color(0xFF98D8A8);  // 進場-淡綠
+    const Color _secExit = Color(0xFFFFB366);   // 出場-淡橙
+    const Color _secTarget = Color(0xFFDDA0DD); // 目標與結果-淡紫
+    const Color _secPnlWin = Color(0xFF81C784); // 盈虧正-淡綠
+    const Color _secPnlLoss = Color(0xFFE57373);// 盈虧負-淡紅
+    const Color _secOther = Color(0xFFB0B0B0); // 其他-淡灰
+    const Color _secNote = Color(0xFFB0C4DE);   // 筆記-淡青
+
+    Widget sectionTitle(String t, Color color) => Padding(
+      padding: const EdgeInsets.only(top: 12, bottom: 6),
+      child: Text(t, style: TextStyle(fontSize: 12, color: color, fontWeight: FontWeight.bold)),
+    );
+
+    // 內容字色：欄位名用區塊色，數值預設亮白；盈虧金額/率依正負綠紅
+    const Color _valueDefault = Color(0xFFE8E8E8);
+    Widget settledChartBox(String l, String v, Color labelColor, {Color? valueColor}) => Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(l, style: TextStyle(fontSize: 10, color: labelColor)),
+        Text(v, style: TextStyle(fontSize: 13, color: valueColor ?? _valueDefault)),
+      ],
+    );
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.only(bottom: 20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Text('$symbol 結算紀錄', style: const TextStyle(color: Color(0xFFFFC0CB), fontSize: 20)),
+          ),
+          sectionTitle('基本', _secBasic),
+          GridView.count(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            crossAxisCount: crossCount,
+            mainAxisSpacing: 8,
+            crossAxisSpacing: 12,
+            childAspectRatio: 2.8,
+            children: [
+              settledChartBox('交易對', symbol, _secBasic),
+              settledChartBox('方向', _sideLabel(pos), _secBasic),
+              settledChartBox('槓桿', '${pos['leverage'] ?? '--'}x', _secBasic),
+              settledChartBox('保證金', '${pos['uValue'] ?? '--'} U', _secBasic),
+            ],
+          ),
+          sectionTitle('進場', _secEntry),
+          GridView.count(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            crossAxisCount: crossCount,
+            mainAxisSpacing: 8,
+            crossAxisSpacing: 12,
+            childAspectRatio: 2.8,
+            children: [
+              settledChartBox('進場時間', _fmtEntryTime(pos['entryTime']), _secEntry),
+              settledChartBox('進場價', '${pos['entry'] ?? '--'}', _secEntry),
+            ],
+          ),
+          sectionTitle('出場', _secExit),
+          GridView.count(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            crossAxisCount: crossCount,
+            mainAxisSpacing: 8,
+            crossAxisSpacing: 12,
+            childAspectRatio: 2.8,
+            children: [
+              settledChartBox('平倉時間', _fmtEntryTime(pos['settledAt']), _secExit),
+              settledChartBox(
+                pos['status'].toString().contains('手動出場') ? '出場價格' : '平倉價',
+                '${pos['current'] ?? '--'}',
+                _secExit,
+              ),
+              settledChartBox('持倉時長', _fmtDuration(pos['entryTime'], pos['settledAt']), _secExit),
+              if (pos['exitRatioDisplay'] != null || pos['exitRatio'] != null)
+                settledChartBox('出場比例', '${((toD(pos['exitRatioDisplay'] ?? pos['exitRatio'] ?? 0)) * 100).toStringAsFixed(0)}%', _secExit),
+            ],
+          ),
+          sectionTitle('目標與結果', _secTarget),
+          GridView.count(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            crossAxisCount: crossCount,
+            mainAxisSpacing: 8,
+            crossAxisSpacing: 12,
+            childAspectRatio: 2.8,
+            children: [
+              settledChartBox('TP1', '${pos['tp1'] ?? '--'}', _secTarget),
+              if (toD(pos['tp2']) > 0) settledChartBox('TP2', '${pos['tp2']}', _secTarget),
+              if (toD(pos['tp3']) > 0) settledChartBox('TP3', '${pos['tp3']}', _secTarget),
+              settledChartBox('止損', '${pos['sl'] ?? '--'}', _secTarget),
+              settledChartBox('達標檔位', pos['status'].toString().contains('止盈') ? _tpLabel((pos['hitTp'] ?? '--').toString(), pos) : (pos['status'].toString().contains('止損') ? '止損' : (pos['status'] ?? '--').toString()), _secTarget),
+              settledChartBox('結算類型', _statusDisplay(pos['status'], pos), _secTarget),
+            ],
+          ),
+          sectionTitle('盈虧', Colors.grey),
+          GridView.count(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            crossAxisCount: crossCount,
+            mainAxisSpacing: 8,
+            crossAxisSpacing: 12,
+            childAspectRatio: 2.8,
+            children: [
+              settledChartBox('盈虧金額', '${pnl >= 0 ? '+' : ''}${pnl.toStringAsFixed(2)} U', Colors.grey, valueColor: pnl >= 0 ? _secPnlWin : _secPnlLoss),
+              settledChartBox('盈虧率', '$roi%', Colors.grey, valueColor: pnl >= 0 ? _secPnlWin : _secPnlLoss),
+              settledChartBox('RR', rr != null ? rr.toStringAsFixed(2) : '--', Colors.grey),
+            ],
+          ),
+          if (pos['source'] != null && pos['source'].toString().isNotEmpty) ...[
+            sectionTitle('其他', _secOther),
+            settledChartBox('來源', pos['source'].toString() == 'api_backfill' ? 'API 補錄' : pos['source'].toString(), _secOther),
+          ],
+          sectionTitle('筆記', _secNote),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            child: Card(
+              color: const Color(0xFF1A1A1A),
+              child: InkWell(
+                onTap: () => _showNoteEditor(pos),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: Text(
+                          (pos['note'] ?? '').toString().isEmpty ? '點擊新增筆記...' : pos['note'].toString(),
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: (pos['note'] ?? '').toString().isEmpty ? Colors.grey : _secNote,
+                            fontStyle: (pos['note'] ?? '').toString().isEmpty ? FontStyle.italic : FontStyle.normal,
+                          ),
+                          maxLines: 10,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      const Icon(Icons.edit_outlined, size: 18, color: Colors.grey),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showNoteEditor(Map<String, dynamic> pos) {
+    final noteController = TextEditingController(text: (pos['note'] ?? '').toString());
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF111111),
+        title: const Text('筆記', style: TextStyle(color: Color(0xFFFFC0CB))),
+        content: TextField(
+          controller: noteController,
+          decoration: const InputDecoration(
+            hintText: '記錄覆盤過程、心得、檢討...',
+            border: OutlineInputBorder(),
+          ),
+          maxLines: 10,
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final idx = positions.indexOf(pos);
+              if (idx >= 0) {
+                setState(() {
+                  positions[idx]['note'] = noteController.text.trim();
+                });
+                _persistPositions();
+              }
+              Navigator.pop(ctx);
+            },
+            style: FilledButton.styleFrom(backgroundColor: const Color(0xFFFFC0CB)),
+            child: const Text('儲存', style: TextStyle(color: Colors.black)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 監控中倉位詳情用（含 K 線）；結算頁已改為只顯示 _buildSettledDataContent，此方法保留供日後「查看 K 線」等用途。
+  // ignore: unused_element
   Widget _buildChartContent({required BuildContext context, required Map<String, dynamic> pos, required String symbol, required List<Candle> candles, required Map<String, double?> oiChanges, required List<String> oiPeriods, String interval = '15m', bool shrinkChart = false}) {
 
     final isPortrait = MediaQuery.of(context).orientation == Orientation.portrait;
 
     return Column(children: [
 
-      Text("$symbol $interval K線${pos['candles'] != null && (pos['candles'] as List).isNotEmpty ? '（Close snapshot）' : ''}${candles.isEmpty ? ' · K 線載入失敗，僅顯示進出場線' : ''}", style: const TextStyle(color: Color(0xFFFFC0CB), fontSize: 20)),
+      Text("$symbol $interval K線${candles.isEmpty ? ' · K 線載入失敗，僅顯示進出場線' : ''}", style: const TextStyle(color: Color(0xFFFFC0CB), fontSize: 20)),
 
       Expanded(flex: shrinkChart ? 2 : 3, child: _buildKlineChartCore(candles: candles, pos: pos, interval: interval)),
 
@@ -4775,15 +5130,15 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
               Row(children: [
 
-                Expanded(child: TextField(controller: cs['lev'], decoration: const InputDecoration(labelText: "槓桿"), keyboardType: TextInputType.number)),
+                Expanded(child: TextField(controller: cs['lev'], decoration: const InputDecoration(labelText: "槓桿"), keyboardType: const TextInputType.numberWithOptions(decimal: true))),
 
                 const SizedBox(width: 10),
 
-                Expanded(child: TextField(controller: cs['val'], decoration: const InputDecoration(labelText: "倉位 (U)"), keyboardType: TextInputType.number)),
+                Expanded(child: TextField(controller: cs['val'], decoration: const InputDecoration(labelText: "倉位 (U)"), keyboardType: const TextInputType.numberWithOptions(decimal: true))),
 
               ]),
 
-              TextField(controller: cs['ent'], decoration: const InputDecoration(labelText: "進場價"), keyboardType: TextInputType.number),
+              TextField(controller: cs['ent'], decoration: const InputDecoration(labelText: "進場價"), keyboardType: const TextInputType.numberWithOptions(decimal: true)),
 
               const SizedBox(height: 12),
 
@@ -4877,19 +5232,19 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
               ),
 
-              TextField(controller: cs['tp1'], decoration: const InputDecoration(labelText: "TP1（必填）出場 50%，僅設 TP1 時為全出 100%"), keyboardType: TextInputType.number),
+              TextField(controller: cs['tp1'], decoration: const InputDecoration(labelText: "TP1（必填）出場 50%，僅設 TP1 時為全出 100%"), keyboardType: const TextInputType.numberWithOptions(decimal: true)),
 
               Row(children: [
 
-                Expanded(child: TextField(controller: cs['tp2'], decoration: const InputDecoration(labelText: "TP2（選填）出場 25%，僅設 TP1+TP2 時為 50%"), keyboardType: TextInputType.number)),
+                Expanded(child: TextField(controller: cs['tp2'], decoration: const InputDecoration(labelText: "TP2（選填）出場 25%，僅設 TP1+TP2 時為 50%"), keyboardType: const TextInputType.numberWithOptions(decimal: true))),
 
                 const SizedBox(width: 8),
 
-                Expanded(child: TextField(controller: cs['tp3'], decoration: const InputDecoration(labelText: "TP3（選填）出場 25%"), keyboardType: TextInputType.number)),
+                Expanded(child: TextField(controller: cs['tp3'], decoration: const InputDecoration(labelText: "TP3（選填）出場 25%"), keyboardType: const TextInputType.numberWithOptions(decimal: true))),
 
               ]),
 
-              TextField(controller: cs['sl'], decoration: const InputDecoration(labelText: "止損 SL")),
+              TextField(controller: cs['sl'], decoration: const InputDecoration(labelText: "止損 SL"), keyboardType: const TextInputType.numberWithOptions(decimal: true)),
 
               const SizedBox(height: 20),
 
@@ -5033,17 +5388,17 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
               Row(children: [
 
-                Expanded(child: TextField(controller: cs['lev'], decoration: const InputDecoration(labelText: "槓桿"), keyboardType: TextInputType.number)),
+                Expanded(child: TextField(controller: cs['lev'], decoration: const InputDecoration(labelText: "槓桿"), keyboardType: const TextInputType.numberWithOptions(decimal: true))),
 
                 const SizedBox(width: 10),
 
-                Expanded(child: TextField(controller: cs['val'], decoration: const InputDecoration(labelText: "保證金"), keyboardType: TextInputType.number)),
+                Expanded(child: TextField(controller: cs['val'], decoration: const InputDecoration(labelText: "保證金"), keyboardType: const TextInputType.numberWithOptions(decimal: true))),
 
               ]),
 
-              TextField(controller: cs['ent'], decoration: const InputDecoration(labelText: "進場價"), keyboardType: TextInputType.number),
+              TextField(controller: cs['ent'], decoration: const InputDecoration(labelText: "進場價"), keyboardType: const TextInputType.numberWithOptions(decimal: true)),
 
-              if (isSettledEdit) TextField(controller: cs['settledPrice'], decoration: const InputDecoration(labelText: "平倉價"), keyboardType: TextInputType.number),
+              if (isSettledEdit) TextField(controller: cs['settledPrice'], decoration: const InputDecoration(labelText: "平倉價"), keyboardType: const TextInputType.numberWithOptions(decimal: true)),
 
               const SizedBox(height: 8),
 
@@ -5085,19 +5440,19 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
               ),
 
-              TextField(controller: cs['tp1'], decoration: const InputDecoration(labelText: "TP1（必填）出場 50%，僅設 TP1 時為全出 100%"), keyboardType: TextInputType.number),
+              TextField(controller: cs['tp1'], decoration: const InputDecoration(labelText: "TP1（必填）出場 50%，僅設 TP1 時為全出 100%"), keyboardType: const TextInputType.numberWithOptions(decimal: true)),
 
               Row(children: [
 
-                Expanded(child: TextField(controller: cs['tp2'], decoration: const InputDecoration(labelText: "TP2（選填）出場 25%，僅設 TP1+TP2 時為 50%"), keyboardType: TextInputType.number)),
+                Expanded(child: TextField(controller: cs['tp2'], decoration: const InputDecoration(labelText: "TP2（選填）出場 25%，僅設 TP1+TP2 時為 50%"), keyboardType: const TextInputType.numberWithOptions(decimal: true))),
 
                 const SizedBox(width: 8),
 
-                Expanded(child: TextField(controller: cs['tp3'], decoration: const InputDecoration(labelText: "TP3（選填）出場 25%"), keyboardType: TextInputType.number)),
+                Expanded(child: TextField(controller: cs['tp3'], decoration: const InputDecoration(labelText: "TP3（選填）出場 25%"), keyboardType: const TextInputType.numberWithOptions(decimal: true))),
 
               ]),
 
-              TextField(controller: cs['sl'], decoration: const InputDecoration(labelText: "止損 SL")),
+              TextField(controller: cs['sl'], decoration: const InputDecoration(labelText: "止損 SL"), keyboardType: const TextInputType.numberWithOptions(decimal: true)),
 
               const SizedBox(height: 20),
 
@@ -5139,7 +5494,13 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
                     if (pos['exitRatio'] != null) updated['exitRatio'] = pos['exitRatio'];
 
+                    if (pos['exitRatioDisplay'] != null) updated['exitRatioDisplay'] = pos['exitRatioDisplay'];
+
                   }
+
+                  if (pos['note'] != null) updated['note'] = pos['note'];
+
+                  if (pos['realizedPnl'] != null) updated['realizedPnl'] = pos['realizedPnl'];
 
                   setState(() => positions[idx] = updated);
 
@@ -5227,7 +5588,7 @@ class _ChartDialogContentState extends State<_ChartDialogContent> {
 
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
 
-      Row(children: [
+      if (!widget.isSettled) Row(children: [
 
         const Text("週期：", style: TextStyle(color: Colors.grey, fontSize: 14)),
 
@@ -5361,7 +5722,14 @@ class _DetailChartLiveState extends State<_DetailChartLive> {
 
     return Column(children: [
 
-      Text("${widget.symbol} ${widget.interval} K線${candles.isEmpty ? ' · K 線載入失敗，僅顯示進出場線' : ''}", style: const TextStyle(color: Color(0xFFFFC0CB), fontSize: 20)),
+      Row(children: [
+        Flexible(child: Text("${widget.symbol} ${widget.interval} K線${candles.isEmpty ? ' · K 線載入失敗，僅顯示進出場線' : ''}", style: const TextStyle(color: Color(0xFFFFC0CB), fontSize: 20))),
+        if (candles.isEmpty)
+          TextButton(
+            onPressed: () => _refresh(),
+            child: const Text('重試', style: TextStyle(color: Color(0xFFFFC0CB), fontSize: 14)),
+          ),
+      ]),
 
       Expanded(flex: widget.shrinkChartHeight ? 2 : 3, child: _buildKlineChartCore(candles: candles, pos: pos, interval: widget.interval)),
 
