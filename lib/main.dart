@@ -1062,37 +1062,74 @@ class Candle {
 
   Candle(this.x, this.low, this.high, this.open, this.close);
 
-  final DateTime x; final double low; final double high; final double open; final double close;
+  final DateTime x;
+
+  final double low;
+
+  final double high;
+
+  final double open;
+
+  final double close;
+
+}
+
+/// 參考線用單點（時間, 價格），兩點連成水平線
+class _RefPoint {
+
+  _RefPoint(this.x, this.y);
+
+  final DateTime x;
+
+  final double y;
 
 }
 
 const List<String> _klineIntervals = ['15m', '1h', '4h'];
 
-/// K 線來源：Binance fapi。網頁版預設走 api.cors.lol，易失敗；若有設定自訂 Proxy 則改走 Proxy。
+/// K 線來源：Binance fapi。symbol 會自動去掉連字號以符合 Binance 格式。
 Future<List<Candle>> _fetchKlines(String symbol, [String interval = '15m', String? proxyUrl]) async {
 
   try {
 
-    final url = 'https://fapi.binance.com/fapi/v1/klines?symbol=$symbol&interval=$interval&limit=40';
+    final binanceSymbol = symbol.toString().replaceAll('-', '').toUpperCase();
+    if (binanceSymbol.isEmpty) return [];
+
+    final url = 'https://fapi.binance.com/fapi/v1/klines?symbol=$binanceSymbol&interval=$interval&limit=40';
 
     final http.Response res;
-
     if (kIsWeb && proxyUrl != null && proxyUrl.trim().isNotEmpty) {
-
       final proxy = proxyUrl.trim().replaceAll(RegExp(r'/$'), '');
       res = await http.post(Uri.parse(proxy), headers: {'Content-Type': 'application/json'}, body: json.encode({'url': url, 'headers': <String, String>{}}));
     } else {
-
       res = await http.get(Uri.parse(_webProxyUrl(url)));
     }
 
     if (res.statusCode != 200) return [];
 
-    final data = json.decode(res.body);
-    if (data is! List) return [];
-    return data.map((e) => Candle(DateTime.fromMillisecondsSinceEpoch(e[0]), toD(e[3]), toD(e[2]), toD(e[1]), toD(e[4]))).toList();
+    final raw = json.decode(res.body);
+    if (raw is! List || raw.isEmpty) return [];
 
-  } catch (_) { return []; }
+    final out = <Candle>[];
+    for (final e in raw) {
+      if (e is! List || e.length < 5) continue;
+      final t = e[0] is num ? (e[0] as num).toInt() : int.tryParse(e[0].toString());
+      if (t == null) continue;
+      out.add(Candle(
+        DateTime.fromMillisecondsSinceEpoch(t),
+        toD(e[3]),
+        toD(e[2]),
+        toD(e[1]),
+        toD(e[4]),
+      ));
+    }
+    return out;
+
+  } catch (_) {
+
+    return [];
+
+  }
 
 }
 
@@ -1105,14 +1142,6 @@ List<Candle> _deserializeCandles(List<dynamic> raw) => raw.map((e) {
   return Candle(DateTime.fromMillisecondsSinceEpoch(L[0] as int), toD(L[3]), toD(L[2]), toD(L[1]), toD(L[4]));
 
 }).toList();
-
-CartesianChartAnnotation _chartLine(dynamic p, Color c, String t) => CartesianChartAnnotation(
-
-  widget: Text("-- $t ($p)", style: TextStyle(color: c, fontSize: 10)),
-
-  coordinateUnit: CoordinateUnit.point, y: toD(p), x: DateTime.now(),
-
-);
 
 /// 1H: 每 8 小時一格；15m: 90 分鐘；4H: 1 天
 DateTimeAxis _dateTimeAxisForInterval(String interval) {
@@ -1171,6 +1200,151 @@ DateTimeAxis _dateTimeAxisForInterval(String interval) {
   final pad = (mx - mn).clamp(1.0, double.infinity) * 0.1;
 
   return (mn - pad, mx + pad);
+
+}
+
+/// 依 K 線與倉位 entry/tp/sl 計算圖表 Y 軸範圍（含 padding）
+(double min, double max) _klineChartYRange(List<Candle> candles, Map<String, dynamic> pos) {
+
+  double yMin = double.infinity;
+
+  double yMax = -double.infinity;
+
+  for (final c in candles) {
+
+    if (c.low < yMin) yMin = c.low;
+
+    if (c.high > yMax) yMax = c.high;
+
+  }
+
+  final entry = toD(pos['entry']);
+
+  final sl = toD(pos['sl']);
+
+  final tp1 = toD(pos['tp1']);
+
+  final tp2 = toD(pos['tp2']);
+
+  final tp3 = toD(pos['tp3']);
+
+  for (final v in [entry, sl, tp1, tp2, tp3]) {
+
+    if (v > 0) {
+
+      if (v < yMin) yMin = v;
+
+      if (v > yMax) yMax = v;
+
+    }
+
+  }
+
+  if (yMin == double.infinity || yMax <= yMin) {
+
+    final fallback = _yRangeFromPosition(pos);
+
+    return fallback ?? (0.0, 100000.0);
+
+  }
+
+  final pad = (yMax - yMin).clamp(1.0, double.infinity) * 0.08;
+
+  return (yMin - pad, yMax + pad);
+
+}
+
+/// 單一 K 線圖核心：蠟燭圖 + 進場/止損/止盈水平線，Y 軸依資料與倉位計算
+Widget _buildKlineChartCore({required List<Candle> candles, required Map<String, dynamic> pos, required String interval}) {
+
+  final yRange = _klineChartYRange(candles, pos);
+
+  DateTime xStart;
+  final entryTimeRaw = pos['entryTime'];
+  if (entryTimeRaw != null) {
+    final entryTimeMs = entryTimeRaw is num ? entryTimeRaw.toInt() : int.tryParse(entryTimeRaw.toString());
+    if (entryTimeMs != null && entryTimeMs > 0) {
+      xStart = DateTime.fromMillisecondsSinceEpoch(entryTimeMs);
+    } else {
+      xStart = candles.isNotEmpty ? candles.first.x : DateTime.now().subtract(const Duration(hours: 24));
+    }
+  } else {
+    xStart = candles.isNotEmpty ? candles.first.x : DateTime.now().subtract(const Duration(hours: 24));
+  }
+
+  final xEnd = candles.isNotEmpty ? candles.last.x : DateTime.now();
+
+  final entry = toD(pos['entry']);
+
+  final sl = toD(pos['sl']);
+
+  final tp1 = toD(pos['tp1']);
+
+  final tp2 = toD(pos['tp2']);
+
+  final tp3 = toD(pos['tp3']);
+
+  final series = <CartesianSeries<dynamic, DateTime>>[];
+
+  if (candles.isNotEmpty) {
+
+    series.add(CandleSeries<Candle, DateTime>(
+
+      dataSource: candles,
+
+      xValueMapper: (c, _) => c.x,
+
+      lowValueMapper: (c, _) => c.low,
+
+      highValueMapper: (c, _) => c.high,
+
+      openValueMapper: (c, _) => c.open,
+
+      closeValueMapper: (c, _) => c.close,
+
+    ));
+
+  }
+
+  void addRefLine(double price, Color color) {
+
+    if (price <= 0) return;
+
+    series.add(LineSeries<_RefPoint, DateTime>(
+
+      dataSource: [_RefPoint(xStart, price), _RefPoint(xEnd, price)],
+
+      xValueMapper: (p, _) => p.x,
+
+      yValueMapper: (p, _) => p.y,
+
+      color: color,
+
+      width: 1.5,
+
+    ));
+
+  }
+
+  addRefLine(entry, Colors.white);
+
+  addRefLine(sl, Colors.red);
+
+  addRefLine(tp1, Colors.green);
+
+  addRefLine(tp2, Colors.green);
+
+  addRefLine(tp3, Colors.green);
+
+  return SfCartesianChart(
+
+    primaryXAxis: _dateTimeAxisForInterval(interval),
+
+    primaryYAxis: NumericAxis(minimum: yRange.$1, maximum: yRange.$2),
+
+    series: series,
+
+  );
 
 }
 
@@ -4432,45 +4606,11 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
     final isPortrait = MediaQuery.of(context).orientation == Orientation.portrait;
 
-    final axis = _dateTimeAxisForInterval(interval);
-
-    final yRange = candles.isEmpty ? _yRangeFromPosition(pos) : null;
-
     return Column(children: [
 
       Text("$symbol $interval K線${pos['candles'] != null && (pos['candles'] as List).isNotEmpty ? '（Close snapshot）' : ''}${candles.isEmpty ? ' · K 線載入失敗，僅顯示進出場線' : ''}", style: const TextStyle(color: Color(0xFFFFC0CB), fontSize: 20)),
 
-      Expanded(flex: shrinkChart ? 2 : 3, child: SfCartesianChart(
-
-        primaryXAxis: axis,
-
-        primaryYAxis: yRange != null ? NumericAxis(minimum: yRange.$1, maximum: yRange.$2) : NumericAxis(),
-
-        series: <CartesianSeries<Candle, DateTime>>[
-
-          CandleSeries<Candle, DateTime>(
-
-            dataSource: candles, xValueMapper: (c,_) => c.x, lowValueMapper: (c,_) => c.low, highValueMapper: (c,_) => c.high, openValueMapper: (c,_) => c.open, closeValueMapper: (c,_) => c.close,
-
-          ),
-
-        ],
-
-        annotations: [
-
-          _chartLine(pos['entry'], Colors.white, "Entry"),
-
-          if (toD(pos['tp3']) > 0) _chartLine(pos['tp3'], Colors.green, "TP3"),
-
-          if (toD(pos['tp3']) <= 0 && toD(pos['tp2']) > 0) _chartLine(pos['tp2'], Colors.green, "TP2"),
-
-          if (toD(pos['tp3']) <= 0 && toD(pos['tp2']) <= 0 && toD(pos['tp1']) > 0) _chartLine(pos['tp1'], Colors.green, "TP1"),
-
-          _chartLine(pos['sl'], Colors.red, "SL"),
-
-        ],
-
-      )),
+      Expanded(flex: shrinkChart ? 2 : 3, child: _buildKlineChartCore(candles: candles, pos: pos, interval: interval)),
 
       shrinkChart
           ? Expanded(
@@ -5219,43 +5359,11 @@ class _DetailChartLiveState extends State<_DetailChartLive> {
 
     final pos = widget.pos;
 
-    final yRange = candles.isEmpty ? _yRangeFromPosition(pos) : null;
-
     return Column(children: [
 
       Text("${widget.symbol} ${widget.interval} K線${candles.isEmpty ? ' · K 線載入失敗，僅顯示進出場線' : ''}", style: const TextStyle(color: Color(0xFFFFC0CB), fontSize: 20)),
 
-      Expanded(flex: widget.shrinkChartHeight ? 2 : 3, child: SfCartesianChart(
-
-        primaryXAxis: _dateTimeAxisForInterval(widget.interval),
-
-        primaryYAxis: yRange != null ? NumericAxis(minimum: yRange.$1, maximum: yRange.$2) : NumericAxis(),
-
-        series: <CartesianSeries<Candle, DateTime>>[
-
-          CandleSeries<Candle, DateTime>(
-
-            dataSource: candles, xValueMapper: (c,_) => c.x, lowValueMapper: (c,_) => c.low, highValueMapper: (c,_) => c.high, openValueMapper: (c,_) => c.open, closeValueMapper: (c,_) => c.close,
-
-          ),
-
-        ],
-
-        annotations: [
-
-          _chartLine(pos['entry'], Colors.white, "Entry"),
-
-          if (toD(pos['tp3']) > 0) _chartLine(pos['tp3'], Colors.green, "TP3"),
-
-          if (toD(pos['tp3']) <= 0 && toD(pos['tp2']) > 0) _chartLine(pos['tp2'], Colors.green, "TP2"),
-
-          if (toD(pos['tp3']) <= 0 && toD(pos['tp2']) <= 0 && toD(pos['tp1']) > 0) _chartLine(pos['tp1'], Colors.green, "TP1"),
-
-          _chartLine(pos['sl'], Colors.red, "SL"),
-
-        ],
-
-      )),
+      Expanded(flex: widget.shrinkChartHeight ? 2 : 3, child: _buildKlineChartCore(candles: candles, pos: pos, interval: widget.interval)),
 
       widget.shrinkChartHeight
           ? Expanded(
