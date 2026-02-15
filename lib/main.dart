@@ -4164,6 +4164,40 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
   List<dynamic> get _watching => positions.where((p) => p['status'].toString().contains('監控中')).toList();
 
+  /// 監控中持倉的未結盈虧統計（合計與筆數）
+  Widget _buildWatchingUnrealizedSummary() {
+    final watching = _watching;
+    if (watching.isEmpty) return const SizedBox.shrink();
+    double totalPnl = 0;
+    for (final p in watching) {
+      if (p is Map<String, dynamic>) totalPnl += _pnlAmount(p);
+    }
+    final isPositive = totalPnl >= 0;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+      child: Card(
+        color: const Color(0xFF1A1A1A),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text('未結盈虧統計', style: TextStyle(fontSize: 14, color: Colors.grey.shade300)),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('${totalPnl >= 0 ? '+' : ''}${totalPnl.toStringAsFixed(2)} U', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: isPositive ? Colors.green : Colors.red)),
+                  const SizedBox(width: 12),
+                  Text('${watching.length} 筆持倉', style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   List<dynamic> get _settled => positions.where((p) {
 
     final s = p['status'].toString();
@@ -4405,7 +4439,13 @@ class _CryptoDashboardState extends State<CryptoDashboard> {
 
                     children: [
 
-                      _listForPositions(_watching, emptyLabel: '尚無監控中的任務', isSettled: false),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          _buildWatchingUnrealizedSummary(),
+                          Expanded(child: _listForPositions(_watching, emptyLabel: '尚無監控中的任務', isSettled: false)),
+                        ],
+                      ),
 
                       Column(
 
