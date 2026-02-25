@@ -1,0 +1,14 @@
+{
+  "name": "openclaw-claude-proxy",
+  "version": "1.0.0",
+  "description": "OpenAI-compatible proxy that routes requests through Claude Code CLI",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "uuid": "^11.0.0"
+  }
+}

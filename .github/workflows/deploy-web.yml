@@ -38,6 +38,11 @@ jobs:
       - name: Build web
         run: flutter build web --base-href /${{ github.event.repository.name }}/
 
+      - name: Add Bingo predictor app
+        run: |
+          mkdir -p build/web/bingobingo
+          cp -r bingobingo_predictor/web/* build/web/bingobingo/
+
       - name: Setup Pages
         uses: actions/configure-pages@v4
 
