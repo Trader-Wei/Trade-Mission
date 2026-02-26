@@ -11,13 +11,13 @@ import argparse
 import sys
 from pathlib import Path
 
-# 從專案根目錄執行：python -m bingobingo_predictor.run_bot
-# 或進入 bingobingo_predictor 後：python run_bot.py（會把上層加入 path 並以套件載入）
+# 從專案根目錄執行：python -m bingobingo_bot.run_bot
+# 或進入 bingobingo_bot 後：python run_bot.py（會把上層加入 path 並以套件載入）
 _root = Path(__file__).resolve().parent
 _parent = _root.parent
 if _parent not in sys.path:
     sys.path.insert(0, str(_parent))
-from bingobingo_predictor.predictor import BingobingoPredictor, run_from_csv, run_with_sample_data
+from bingobingo_bot.predictor import BingobingoPredictor, run_from_csv, run_with_sample_data
 
 
 def main():

@@ -11,7 +11,7 @@
 ## 安裝
 
 ```bash
-cd bingobingo_predictor
+cd bingobingo_bot
 pip install -r requirements.txt
 ```
 
@@ -23,13 +23,13 @@ pip install -r requirements.txt
 
 ```bash
 # 在專案根目錄 anya_trade_app 下
-python -m bingobingo_predictor.run_bot
+python -m bingobingo_bot.run_bot
 ```
 
 或進入目錄後：
 
 ```bash
-cd bingobingo_predictor
+cd bingobingo_bot
 python run_bot.py
 ```
 
@@ -41,7 +41,7 @@ python run_bot.py
 - 其餘 20 欄：該期 20 個開獎號碼（欄位名可為 `n1`～`n20` 或 `1`～`20` 等）
 
 ```bash
-python -m bingobingo_predictor.run_bot --csv 路徑/歷史開獎.csv
+python -m bingobingo_bot.run_bot --csv 路徑/歷史開獎.csv
 ```
 
 ### 3. 參數說明
@@ -58,7 +58,7 @@ python -m bingobingo_predictor.run_bot --csv 路徑/歷史開獎.csv
 範例：加大回溯期數、並輸出超級獎號
 
 ```bash
-python -m bingobingo_predictor.run_bot --csv history.csv --lookback 150 --super
+python -m bingobingo_bot.run_bot --csv history.csv --lookback 150 --super
 ```
 
 ## 方法簡介
@@ -81,7 +81,7 @@ python -m bingobingo_predictor.run_bot --csv history.csv --lookback 150 --super
 
 本專案內含**靜態網頁版**，只顯示「最容易出現的 3 個號碼」，可在手機瀏覽器使用。
 
-- **本機預覽**：用瀏覽器開啟 `bingobingo_predictor/web/index.html`。
+- **本機預覽**：用瀏覽器開啟 `bingobingo_bot/web/index.html`。
 - **連上 GitHub 後**：推送到 `main` 後，GitHub Actions 會自動部署。網址為：
   - **https://你的帳號.github.io/anya_trade_app/bingobingo/**
 

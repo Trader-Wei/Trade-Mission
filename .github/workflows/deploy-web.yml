@@ -41,7 +41,7 @@ jobs:
       - name: Add Bingo predictor app
         run: |
           mkdir -p build/web/bingobingo
-          cp -r bingobingo_predictor/web/* build/web/bingobingo/
+          cp -r bingobingo_bot/web/* build/web/bingobingo/
 
       - name: Setup Pages
         uses: actions/configure-pages@v4
