@@ -33,9 +33,32 @@ cd bingobingo_bot
 python run_bot.py
 ```
 
-### 2. 使用自有歷史開獎 CSV
+### 2. 真實歷史 CSV（推薦：用於回測與學習）
 
-請從 [台灣彩券賓果賓果](https://www.taiwanlottery.com/lotto/result/bingo_bingo/) 下載或自行整理歷史開獎，CSV 格式範例：
+先從 **twlottery.in** 抓取真實開獎並存成 CSV：
+
+```bash
+# 在專案根目錄 anya_trade_app 下
+python -m bingobingo_bot.fetch_history -o bingobingo_history.csv
+# 或指定輸出路徑、最多期數
+python -m bingobingo_bot.fetch_history -o bingobingo_bot/web/bingobingo_history.csv --max 500
+```
+
+再用該 CSV 跑**回測**或**參數學習**（目標中 3 個 ≥ 7%）：
+
+```bash
+# 回測 300 期
+python -m bingobingo_bot.backtest --csv bingobingo_history.csv --n 300
+
+# 學習最佳參數並寫入網頁用
+python -m bingobingo_bot.tune_backtest --csv bingobingo_history.csv --n 300 --target 0.07 --out bingobingo_bot/web/best_params.json
+```
+
+網頁載入時會自動讀取 `web/best_params.json` 套用學習到的參數。
+
+### 3. 使用自有歷史開獎 CSV
+
+若已有從 [台灣彩券賓果賓果](https://www.taiwanlottery.com/lotto/result/bingo_bingo/) 下載或自行整理的 CSV，格式範例：
 
 - 第一欄：期別（可選）
 - 其餘 20 欄：該期 20 個開獎號碼（欄位名可為 `n1`～`n20` 或 `1`～`20` 等）
@@ -44,7 +67,7 @@ python run_bot.py
 python -m bingobingo_bot.run_bot --csv 路徑/歷史開獎.csv
 ```
 
-### 3. 參數說明
+### 4. 參數說明
 
 | 參數 | 說明 | 預設 |
 |------|------|------|
@@ -72,10 +95,13 @@ python -m bingobingo_bot.run_bot --csv history.csv --lookback 150 --super
 ## 程式結構
 
 - `data_loader.py`：CSV 載入、轉成 0/1 矩陣、特徵工程（頻率、間隔、上期狀態等）。  
+- `fetch_history.py`：從 twlottery.in 抓取真實開獎並匯出 CSV（供回測／學習使用）。  
 - `markov_model.py`：馬可夫鏈轉移機率擬合與預測。  
 - `models.py`：Random Forest 與 XGBoost 的訓練與機率輸出。  
 - `predictor.py`：整合三模型、加權、輸出當期 20 碼（與超級獎號）。  
-- `run_bot.py`：指令列介面。
+- `run_bot.py`：指令列介面。  
+- `backtest.py`：與網頁相同邏輯之回測。  
+- `tune_backtest.py`：參數學習（目標中 3 個 ≥ 7%），輸出 `best_params.json`。
 
 ## 網頁 App（手機可用）
 

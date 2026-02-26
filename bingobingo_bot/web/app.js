@@ -6,9 +6,11 @@
  * - 時間順序：draws[0] = 最新一期，draws[1] = 上一期，… 依此類推（新→舊）
  *
  * 【預測邏輯】
- * 1. 頻率：在「目前擁有的全部期數」內，統計每個號碼 1~80 出現幾次
- * 2. 馬可夫加分：若該號在「最新一期」有開出，分數 +0.5（上期有→本期較可能再出現的簡化假設）
- * 3. 分數 = 出現次數 + 馬可夫加分，取分數最高的 3 個號碼，由小到大輸出
+ * 1. 加權頻率：越近的期數權重越高（衰減 WEIGHT_DECAY^期距），凸顯近期熱號
+ * 2. 馬可夫加分：若該號在「最新一期」有開，分數 +MARKOV_BONUS（延續性）
+ * 3. 冷號加分：若該號在最近 COLD_GAP 期都沒開，分數 +COLD_BONUS（預設 0=關閉）
+ * 4. 分數 = 加權頻率 + 馬可夫 + 冷號，取最高 3 個，由小到大輸出
+ * 預設參數為學習結果（真實歷史回測達 7%+）：0.95, 0.3, 0, 5
  *
  * 【資料來源】
  * - 更新開獎：從 https://twlottery.in/lotteryBingo 抓 HTML，解析出多期，順序為頁面順（最新在前）
@@ -23,9 +25,20 @@
   var NUM_PER_DRAW = 20;
   var TOP_N = 3;
   var MIN_DRAWS = 30;
+  var WEIGHT_DECAY = 0.95;
+  var MARKOV_BONUS = 0.3;
+  var COLD_BONUS = 0;
+  var COLD_GAP = 5;
 
   var currentDraws = [];
   var currentPredictedPeriod = null;
+
+  function applyLearnedParams(p) {
+    if (p && typeof p.weight_decay === "number") WEIGHT_DECAY = p.weight_decay;
+    if (p && typeof p.markov_bonus === "number") MARKOV_BONUS = p.markov_bonus;
+    if (p && typeof p.cold_bonus === "number") COLD_BONUS = p.cold_bonus;
+    if (p && typeof p.cold_gap === "number") COLD_GAP = p.cold_gap;
+  }
 
   var LOTTERY_URL = "https://twlottery.in/lotteryBingo";
   var CORS_RAW = "https://api.allorigins.win/raw?url=";
@@ -123,25 +136,34 @@
   // ========== 預測：頻率 + 馬可夫加分 ==========
 
   /**
-   * 輸入 draws（draws[0]=最新），輸出最容易出現的 TOP_N 個號碼（由小到大）。
-   * 分數 = 在全部期數內的出現次數 + （若在最新一期有開則 +0.5）
+   * 輸入 draws（draws[0]=最新）。輸出 TOP_N 個號碼（由小到大）。
+   * 加權頻率（近期權重高）+ 馬可夫加分 + 冷號加分
    */
   function computeTop3(draws) {
     if (!draws || draws.length < MIN_DRAWS) return null;
-    var freq = Array(NUM_RANGE + 1).fill(0);
+    var weighted = Array(NUM_RANGE + 1).fill(0);
     var newest = draws[0];
     var inNewest = {};
     for (var i = 0; i < newest.length; i++) inNewest[newest[i]] = true;
     for (var d = 0; d < draws.length; d++) {
+      var w = Math.pow(WEIGHT_DECAY, d);
       for (var j = 0; j < draws[d].length; j++) {
         var n = draws[d][j];
-        if (n >= 1 && n <= NUM_RANGE) freq[n]++;
+        if (n >= 1 && n <= NUM_RANGE) weighted[n] += w;
       }
     }
     var list = [];
     for (var num = 1; num <= NUM_RANGE; num++) {
-      var score = freq[num];
-      if (inNewest[num]) score += 0.5;
+      var score = weighted[num];
+      if (inNewest[num]) score += MARKOV_BONUS;
+      var gap = 0;
+      for (var d = 0; d < draws.length; d++) {
+        var found = false;
+        for (var j = 0; j < draws[d].length; j++) { if (draws[d][j] === num) { found = true; break; } }
+        if (found) break;
+        gap++;
+      }
+      if (gap > COLD_GAP) score += COLD_BONUS;
       list.push({ num: num, score: score });
     }
     list.sort(function (a, b) { return b.score - a.score; });
@@ -264,8 +286,11 @@
 
   currentDraws = getDefaultDraws();
   var base = (document.querySelector("script[src='app.js']") || {}).src.replace(/\/?app\.js$/i, "") || ".";
-  loadJson(base + "/recent_draws.json", function (err) {
-    if (err) currentDraws = getDefaultDraws();
-    runPrediction();
+  loadJson(base + "/best_params.json", function (err, data) {
+    if (!err && data && data.params) applyLearnedParams(data.params);
+    loadJson(base + "/recent_draws.json", function (err2) {
+      if (err2) currentDraws = getDefaultDraws();
+      runPrediction();
+    });
   });
 })();

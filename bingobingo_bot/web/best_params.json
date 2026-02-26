@@ -1,0 +1,18 @@
+{
+  "params": {
+    "weight_decay": 0.95,
+    "markov_bonus": 0.3,
+    "cold_bonus": 0.0,
+    "cold_gap": 5
+  },
+  "hit3_rate": 0.08196721311475409,
+  "target": 0.07,
+  "reached_target": true,
+  "detail": {
+    "hit1": 119,
+    "hit2": 48,
+    "hit3": 10,
+    "n": 122,
+    "avg": 1.4508196721311475
+  }
+}
