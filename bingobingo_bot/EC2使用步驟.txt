@@ -1,0 +1,23 @@
+========================================
+  bingobingo_bot 在 EC2 上的使用步驟
+========================================
+
+■ 1. 上傳完成後，SSH 登入 EC2
+   Windows PowerShell 或 Git Bash 執行：
+   ssh -i openclaw.pem ubuntu@3.106.232.238
+   （若 openclaw.pem 在別處請寫完整路徑）
+
+■ 2. 只跑預測（指令列，輸出 3 個號碼）
+   cd ~/bingobingo_bot
+   pip3 install -r requirements.txt
+   python3 -m bingobingo_bot.run_bot --top 3
+
+■ 3. 在 EC2 上開網頁版（給瀏覽器開）
+   cd ~/bingobingo_bot/web
+   python3 -m http.server 8080
+   然後在電腦瀏覽器開：http://3.106.232.238:8080
+   （EC2 安全群組需開放 8080）
+
+■ 4. 離開
+   關閉網頁伺服器：Ctrl+C
+   登出 SSH：exit

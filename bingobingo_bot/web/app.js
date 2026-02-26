@@ -4,7 +4,7 @@
   var NUM_RANGE = 80;
   var TOP_N = 3;
   var MIN_DRAWS = 30;
-  var LOOKBACK = 50;
+  var LOOKBACK = 9999;     // 預測時使用全部抓到的期數（無上限）
 
   // 內建範例資料：50 期模擬開獎（每期 20 個不重複 1~80）
   function defaultDraws() {
@@ -46,12 +46,12 @@
     return draws;
   }
 
-  /** 依頻率 + 上期是否出現（簡易馬可夫）計算分數，回傳最容易出現的 3 個號碼 */
+  /** 依頻率 + 上期是否出現（簡易馬可夫）計算分數，回傳最容易出現的 3 個號碼。draws 為 newest-first。 */
   function computeTop3(draws) {
     if (!draws || draws.length < MIN_DRAWS) return null;
-    var use = draws.slice(-LOOKBACK);
+    var use = draws.slice(0, Math.min(draws.length, LOOKBACK));
     var freq = Array(NUM_RANGE + 1).fill(0);
-    var lastDraw = use[use.length - 1];
+    var lastDraw = use[0];
     var lastSet = {};
     for (var i = 0; i < lastDraw.length; i++) lastSet[lastDraw[i]] = true;
 
@@ -186,7 +186,7 @@
       if (draws.length >= MIN_DRAWS) {
         currentDraws = draws;
         runPrediction(currentDraws);
-        setUpdateStatus("已更新 " + draws.length + " 期開獎，並重新計算預測。");
+        setUpdateStatus("已從 twlottery.in 更新 " + draws.length + " 筆開獎，並重新計算預測。");
       } else {
         setUpdateStatus("無法解析足夠期數（目前 " + (draws.length || 0) + " 期）。若從本機檔案開啟，請用 localhost 或部署到網頁後再試；或使用自訂資料。", true);
         if (draws.length > 0) {
