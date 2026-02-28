@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <meta name="theme-color" content="#1a1a2e" />
+  <title>賓果賓果預言機</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>賓果賓果</h1>
+      <p class="subtitle">預測號碼</p>
+    </header>
+
+    <section class="result" id="result" aria-live="polite">
+      <div class="result-label">預測結果</div>
+      <p class="period-row">預測期號：<span id="predictedPeriod">—</span></p>
+      <div class="balls" id="balls">
+        <span class="ball" id="b1">—</span>
+        <span class="ball" id="b2">—</span>
+        <span class="ball" id="b3">—</span>
+      </div>
+      <p class="hint">3星推薦（ML/統計模型加權），僅供參考</p>
+      <p class="hint" id="fourStarRow">4星推薦：—</p>
+    </section>
+
+    <section class="actions">
+      <button type="button" class="btn primary" id="btnPredict">取得預測</button>
+      <button type="button" class="btn update" id="btnUpdate">更新開獎號碼</button>
+      <p class="update-status" id="updateStatus" aria-live="polite"></p>
+      <details class="data-source">
+        <summary>使用自訂開獎資料</summary>
+        <p>貼上每行一期的 20 個號碼（數字用逗號或空格分隔），至少 30 期：</p>
+        <textarea id="customData" placeholder="例：3,15,22,28,31,35,41,44,52,56,61,63,68,70,72,74,76,78,79,80&#10;1,5,11,19,23,30,33,39,42,48,55,58,62,65,69,71,73,75,77,80"></textarea>
+        <button type="button" class="btn secondary" id="btnUseCustom">用以上資料重新計算</button>
+      </details>
+    </section>
+
+    <section class="draws-list-section" aria-label="載入的開獎資料">
+      <details>
+        <summary>載入的期號與開獎數字</summary>
+        <div class="draws-list-meta" id="drawsListMeta">共 0 期（最新在上方）</div>
+        <div class="draws-list" id="drawsList"></div>
+      </details>
+    </section>
+
+    <footer>
+      <p>此為模型推估，僅供參考，請勿作為投注唯一依據。</p>
+    </footer>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

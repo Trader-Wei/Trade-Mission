@@ -38,8 +38,13 @@ from run_predict import run_predict  # type: ignore  # noqa: E402
 
 CSV_PATH = ML_HISTORY_CSV  # 統一使用 ML 模組的歷史 CSV
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder=str(WEB_DIR), static_url_path="")
 CORS(app)
+
+
+@app.get("/")
+def index():
+    return app.send_static_file("index.html")
 
 
 @app.get("/api/health")
