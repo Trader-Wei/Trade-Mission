@@ -195,6 +195,71 @@ header h1 {
   resize: vertical;
 }
 
+.draws-list-section {
+  width: 100%;
+  margin-top: 1.5rem;
+}
+
+.draws-list-section details {
+  background: var(--surface);
+  border-radius: 0.75rem;
+  padding: 0.75rem 1rem;
+}
+
+.draws-list-section summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.draws-list-meta {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin: 0.5rem 0 0.5rem 0;
+}
+
+.draws-list {
+  max-height: 20rem;
+  overflow-y: auto;
+  font-size: 0.8rem;
+}
+
+.draw-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.5rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+
+.draw-row:last-child {
+  border-bottom: none;
+}
+
+.draw-period {
+  min-width: 4.5em;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.draw-nums {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem;
+}
+
+.draw-num {
+  display: inline-block;
+  min-width: 1.5em;
+  text-align: center;
+  padding: 0.1rem 0.25rem;
+  background: rgba(255,255,255,0.08);
+  border-radius: 0.25rem;
+  color: var(--text);
+}
+
 footer {
   margin-top: auto;
   padding-top: 2rem;

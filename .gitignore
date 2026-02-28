@@ -43,3 +43,6 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Bingo ML 模型檔（可執行 train.py 重新產生）
+bingo_ml_predictor/models/*.pkl

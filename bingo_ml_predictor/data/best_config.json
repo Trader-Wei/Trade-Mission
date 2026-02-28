@@ -1,0 +1,9 @@
+{
+  "best_config": {
+    "lookback": 60,
+    "weight_rf": 0.30307743054498704,
+    "weight_xgb": 0.41262992034578916,
+    "weight_markov": 0.2842926491092238
+  },
+  "best_rate": 0.0
+}

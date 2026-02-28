@@ -13,7 +13,7 @@
  * 預設參數為學習結果（真實歷史回測達 7%+）：0.95, 0.3, 0, 5
  *
  * 【資料來源】
- * - 更新開獎：從 https://twlottery.in/lotteryBingo 抓 HTML，解析出多期，順序為頁面順（最新在前）
+ * - 更新開獎：重新載入同目錄 recent_draws.json（請先本機執行 fetch_history 或 csv_to_recent_draws 產生）
  * - 自訂資料：使用者貼上，每行一期，第一行視為最新一期
  * - 內建／JSON：無真實時間則僅供示範
  */
@@ -31,6 +31,7 @@
   var COLD_GAP = 5;
 
   var currentDraws = [];
+  var currentDrawPeriods = [];
   var currentPredictedPeriod = null;
 
   function applyLearnedParams(p) {
@@ -40,9 +41,8 @@
     if (p && typeof p.cold_gap === "number") COLD_GAP = p.cold_gap;
   }
 
-  var LOTTERY_URL = "https://twlottery.in/lotteryBingo";
-  var CORS_RAW = "https://api.allorigins.win/raw?url=";
-  var CORS_GET = "https://api.allorigins.win/get?url=";
+  // 若有後端 API（api_server.py），請設定為例如 "http://localhost:8000"
+  var API_BASE = "http://localhost:8000";
 
   // ========== 資料來源 ==========
 
@@ -84,55 +84,6 @@
     return draws;
   }
 
-  /** 從 twlottery.in 頁面 HTML 解析：頁面順=新→舊，回傳 { draws, latestPeriod } */
-  function parseDrawsFromHtml(html) {
-    var draws = [];
-    var latestPeriod = null;
-    var numRe = /\b(?:[1-9]|[1-7]\d|80)\b/g;
-    var blockRe = /(\d{8,})\s*期\s*([\s\S]*?)(?=\d{8,}\s*期|$)/gi;
-    var m;
-    while ((m = blockRe.exec(html)) !== null) {
-      if (latestPeriod === null) latestPeriod = m[1];
-      var block = m[2];
-      var nums = [];
-      var seen = {};
-      numRe.lastIndex = 0;
-      var numMatch;
-      while ((numMatch = numRe.exec(block)) !== null && nums.length < NUM_PER_DRAW) {
-        var n = parseInt(numMatch[0], 10);
-        if (!seen[n]) { seen[n] = true; nums.push(n); }
-      }
-      if (nums.length === NUM_PER_DRAW) {
-        draws.push(nums.sort(function (a, b) { return a - b; }));
-      }
-    }
-    if (draws.length > 0) return { draws: draws, latestPeriod: latestPeriod };
-    var periodRe = /\d{8,}/g;
-    var positions = [];
-    var pm;
-    while ((pm = periodRe.exec(html)) !== null) positions.push({ i: pm.index, num: pm[0] });
-    for (var k = 0; k < positions.length - 1; k++) {
-      var start = positions[k].i + positions[k].num.length;
-      var end = positions[k + 1].i;
-      if (end - start < 50) continue;
-      numRe.lastIndex = 0;
-      var nums = [];
-      var seen = {};
-      var seg = html.slice(start, end);
-      var numMatch;
-      while ((numMatch = numRe.exec(seg)) !== null && nums.length < NUM_PER_DRAW) {
-        var n = parseInt(numMatch[0], 10);
-        if (!seen[n]) { seen[n] = true; nums.push(n); }
-      }
-      if (nums.length === NUM_PER_DRAW) {
-        draws.push(nums.sort(function (a, b) { return a - b; }));
-        if (latestPeriod === null) latestPeriod = positions[k].num;
-      }
-    }
-    if (latestPeriod === null && positions.length > 0) latestPeriod = positions[0].num;
-    return { draws: draws, latestPeriod: latestPeriod };
-  }
-
   // ========== 預測：頻率 + 馬可夫加分 ==========
 
   /**
@@ -172,7 +123,7 @@
 
   // ========== UI ==========
 
-  function showResult(numbers) {
+  function showResult(numbers, fourStar) {
     var b1 = document.getElementById("b1");
     var b2 = document.getElementById("b2");
     var b3 = document.getElementById("b3");
@@ -182,6 +133,14 @@
       b2.textContent = numbers[1];
       b3.textContent = numbers[2];
       [b1, b2, b3].forEach(function (el) { el.classList.remove("empty"); });
+    }
+    var fourRow = document.getElementById("fourStarRow");
+    if (fourRow) {
+      if (fourStar && fourStar.length >= 4) {
+        fourRow.textContent = "4星推薦：" + fourStar.join("、");
+      } else {
+        fourRow.textContent = "4星推薦：—";
+      }
     }
   }
 
@@ -197,21 +156,40 @@
     el.style.color = isError ? "#e94560" : "var(--text-muted)";
   }
 
-  function runPrediction() {
-    var top3 = computeTop3(currentDraws);
-    showResult(top3);
-    updatePeriodDisplay();
-    return top3;
+  function updateDrawsList() {
+    var meta = document.getElementById("drawsListMeta");
+    var list = document.getElementById("drawsList");
+    if (!list) return;
+    var n = currentDraws.length;
+    if (meta) meta.textContent = "共 " + n + " 期（最新在上方）";
+    list.innerHTML = "";
+    for (var i = 0; i < n; i++) {
+      var periodLabel = (currentDrawPeriods[i] != null) ? currentDrawPeriods[i] + " 期" : "第 " + (i + 1) + " 期";
+      var row = document.createElement("div");
+      row.className = "draw-row";
+      var periodSpan = document.createElement("span");
+      periodSpan.className = "draw-period";
+      periodSpan.textContent = periodLabel;
+      row.appendChild(periodSpan);
+      var numsWrap = document.createElement("span");
+      numsWrap.className = "draw-nums";
+      for (var j = 0; j < currentDraws[i].length; j++) {
+        var numSpan = document.createElement("span");
+        numSpan.className = "draw-num";
+        numSpan.textContent = currentDraws[i][j];
+        numsWrap.appendChild(numSpan);
+      }
+      row.appendChild(numsWrap);
+      list.appendChild(row);
+    }
   }
 
-  function fetchHtml(url, asJson) {
-    return fetch(url).then(function (r) { return r.text(); }).then(function (body) {
-      if (!asJson) return body;
-      try {
-        var data = JSON.parse(body);
-        return (data && data.contents) ? data.contents : body;
-      } catch (e) { return body; }
-    });
+  function runPrediction() {
+    var top3 = computeTop3(currentDraws);
+    showResult(top3, null);
+    updatePeriodDisplay();
+    updateDrawsList();
+    return top3;
   }
 
   document.getElementById("btnPredict").addEventListener("click", function () {
@@ -222,36 +200,68 @@
     var btn = this;
     var origText = btn.textContent;
     btn.disabled = true;
-    btn.textContent = "擷取中…";
+    btn.textContent = "重新載入中…";
     setStatus("");
-    var urlRaw = CORS_RAW + encodeURIComponent(LOTTERY_URL);
-    var urlGet = CORS_GET + encodeURIComponent(LOTTERY_URL);
-    function apply(html) {
-      var parsed = parseDrawsFromHtml(html);
-      var draws = parsed.draws;
-      if (parsed.latestPeriod != null) currentPredictedPeriod = parseInt(parsed.latestPeriod, 10) + 1;
-      if (draws.length >= MIN_DRAWS) {
-        currentDraws = draws;
-        runPrediction();
-        setStatus("已從 twlottery.in 更新 " + draws.length + " 筆開獎，並重新計算預測。");
-      } else {
-        setStatus("無法解析足夠期數（目前 " + (draws.length || 0) + " 期）。請用 localhost／部署後再試或使用自訂資料。", true);
-        if (draws.length > 0) { currentDraws = draws; runPrediction(); }
-      }
-      return draws.length;
+    var base = (document.querySelector("script[src='app.js']") || {}).src.replace(/\/?app\.js$/i, "") || ".";
+    var jsonPath = base + "/recent_draws.json";
+    function done() {
+      btn.disabled = false;
+      btn.textContent = origText;
     }
-    fetchHtml(urlRaw, false)
-      .then(function (html) {
-        var n = apply(html);
-        if (n === 0) return fetchHtml(urlGet, true).then(apply);
-      })
-      .catch(function () {
-        setStatus("擷取失敗。請檢查網路或使用自訂資料。", true);
-      })
-      .then(function () {
-        btn.disabled = false;
-        btn.textContent = origText;
-      });
+    if (API_BASE) {
+      var apiUrl = API_BASE.replace(/\/$/, "") + "/api/update-history?max=500";
+      fetch(apiUrl, { cache: "no-store" })
+        .then(function (r) { return r.json(); })
+        .then(function (res) {
+          if (!res || !res.ok) throw new Error("api");
+          var prediction = res.prediction || null;
+          loadJson(jsonPath, function (err) {
+            done();
+            if (err) {
+              setStatus("API 已更新，但讀取 recent_draws.json 失敗。", true);
+              return;
+            }
+            currentDrawPeriods = [];
+            if (prediction && prediction.predicted_period) {
+              currentPredictedPeriod = prediction.predicted_period;
+            } else {
+              currentPredictedPeriod = null;
+            }
+            if (prediction && prediction.top3) {
+              showResult(prediction.top3, prediction.top4 || null);
+              updatePeriodDisplay();
+              updateDrawsList();
+            } else {
+              runPrediction();
+            }
+            setStatus("已從官方更新 " + currentDraws.length + " 期開獎，並重新訓練與預測。");
+          });
+        })
+        .catch(function () {
+          done();
+          setStatus("無法連線到 API。改為重新載入本機 recent_draws.json。", true);
+          loadJson(jsonPath, function (err) {
+            if (!err) {
+              currentDrawPeriods = [];
+              currentPredictedPeriod = null;
+              runPrediction();
+              setStatus("已載入本機 " + currentDraws.length + " 期開獎。");
+            }
+          });
+        });
+      return;
+    }
+    loadJson(jsonPath, function (err) {
+      done();
+      if (err) {
+        setStatus("找不到 recent_draws.json。請在本機執行：python -m bingobingo_bot.fetch_history -o web/recent_draws.json --max 500", true);
+        return;
+      }
+      currentDrawPeriods = [];
+      currentPredictedPeriod = null;
+      runPrediction();
+      setStatus("已重新載入 " + currentDraws.length + " 期開獎，並重新計算預測。");
+    });
   });
 
   document.getElementById("btnUseCustom").addEventListener("click", function () {
@@ -259,6 +269,7 @@
     var draws = parseCustomInput(text);
     if (draws.length >= MIN_DRAWS) {
       currentDraws = draws;
+      currentDrawPeriods = [];
       currentPredictedPeriod = null;
       runPrediction();
     } else {
@@ -275,6 +286,7 @@
         var data = JSON.parse(xhr.responseText);
         if (Array.isArray(data) && data.length >= MIN_DRAWS) {
           currentDraws = data;
+          currentDrawPeriods = [];
           return cb(null, data);
         }
       } catch (e) {}

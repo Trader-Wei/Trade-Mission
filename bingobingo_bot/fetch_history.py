@@ -17,55 +17,51 @@ except ImportError:
 
 URL = "https://twlottery.in/lotteryBingo"
 NUM_PER_DRAW = 20
-NUM_RE = re.compile(r"\b(?:[1-9]|[1-7]\d|80)\b")
 BLOCK_RE = re.compile(
     r"(\d{8,})\s*期\s*([\s\S]*?)(?=\d{8,}\s*期|$)",
     re.IGNORECASE,
 )
+# 只擷取「每行 - 數字」的列表項，避免期號或其它文字被當成開獎號
+LIST_NUM_RE = re.compile(r"-\s*(\d{1,2})\b")
+
+
+def _extract_list_numbers(block: str) -> list:
+    """從區塊內只取「- 數字」形式的號碼，最多 20 個、1–80、不重複。"""
+    seen = set()
+    nums = []
+    for m in LIST_NUM_RE.finditer(block):
+        if len(nums) >= NUM_PER_DRAW:
+            break
+        n = int(m.group(1))
+        if 1 <= n <= 80 and n not in seen:
+            seen.add(n)
+            nums.append(n)
+    return nums
 
 
 def parse_draws_from_html(html: str):
     """
     解析 HTML，回傳 (draws, periods)。
-    draws[i] = 該期 20 個號碼（由小到大），頁面順=新→舊。
-    periods[i] = 期別字串。
+    只擷取每行「- 數字」的開獎列表，不掃整段文字，避免誤收期號的 1。
     """
     draws = []
     periods = []
     for m in BLOCK_RE.finditer(html):
         period = m.group(1)
         block = m.group(2)
-        seen = set()
-        nums = []
-        for num_m in NUM_RE.finditer(block):
-            if len(nums) >= NUM_PER_DRAW:
-                break
-            n = int(num_m.group(0))
-            if 1 <= n <= 80 and n not in seen:
-                seen.add(n)
-                nums.append(n)
+        nums = _extract_list_numbers(block)
         if len(nums) == NUM_PER_DRAW:
             draws.append(sorted(nums))
             periods.append(period)
     if draws:
         return draws, periods
-    # 備援：用期別位置切區塊
     period_matches = list(re.finditer(r"\d{8,}", html))
     for k in range(len(period_matches) - 1):
         start = period_matches[k].end()
         end = period_matches[k + 1].start()
         if end - start < 50:
             continue
-        seg = html[start:end]
-        seen = set()
-        nums = []
-        for num_m in NUM_RE.finditer(seg):
-            if len(nums) >= NUM_PER_DRAW:
-                break
-            n = int(num_m.group(0))
-            if 1 <= n <= 80 and n not in seen:
-                seen.add(n)
-                nums.append(n)
+        nums = _extract_list_numbers(html[start:end])
         if len(nums) == NUM_PER_DRAW:
             draws.append(sorted(nums))
             periods.append(period_matches[k].group(0))
@@ -74,7 +70,7 @@ def parse_draws_from_html(html: str):
     return draws, periods
 
 
-def fetch_and_save_csv(out_path: str, max_draws: int = 0):
+def fetch_and_save(out_path: str, max_draws: int = 0):
     """
     抓取開獎頁並存成 CSV。
     out_path: 輸出 CSV 路徑。
@@ -83,8 +79,9 @@ def fetch_and_save_csv(out_path: str, max_draws: int = 0):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }
+    url = URL + "?_t=" + str(__import__("time").time())
     try:
-        r = requests.get(URL, headers=headers, timeout=15)
+        r = requests.get(url, headers=headers, timeout=15)
         r.raise_for_status()
         html = r.text
     except Exception as e:
@@ -94,30 +91,45 @@ def fetch_and_save_csv(out_path: str, max_draws: int = 0):
     if not draws:
         print("解析不到任何一期開獎")
         return False
-    # 頁面順=新→舊，要存成最舊→最新
-    draws = list(reversed(draws))
-    periods = list(reversed(periods))
+    # 呼叫端希望保留最新的 max_draws 期；這裡 draws/periods = 新→舊
     if max_draws > 0 and len(draws) > max_draws:
-        draws = draws[-max_draws:]
-        periods = periods[-max_draws:]
+        draws = draws[:max_draws]
+        periods = periods[:max_draws]
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    with open(out, "w", encoding="utf-8-sig", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["period"] + [f"n{i}" for i in range(1, 21)])
-        for p, row in zip(periods, draws):
-            w.writerow([p] + row)
-    print(f"已寫入 {len(draws)} 期 → {out}")
+    if out.suffix.lower() == ".json":
+        import json
+
+        # 給網頁用：draws[0] = 最新一期（僅 20 個號碼）
+        with open(out, "w", encoding="utf-8") as f:
+            json.dump(draws, f, ensure_ascii=False)
+        print(f"已寫入 JSON {len(draws)} 期 → {out}")
+    else:
+        # CSV 給 backtest/tune_backtest 用：最舊→最新
+        draws_csv = list(reversed(draws))
+        periods_csv = list(reversed(periods))
+        with open(out, "w", encoding="utf-8-sig", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["period"] + [f"n{i}" for i in range(1, 21)])
+            for p, row in zip(periods_csv, draws_csv):
+                w.writerow([p] + row)
+        print(f"已寫入 CSV {len(draws_csv)} 期 → {out}")
     return True
 
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="從 twlottery.in 抓取賓果賓果歷史開獎並存成 CSV")
-    parser.add_argument("-o", "--out", type=str, default="bingobingo_history.csv", help="輸出 CSV 路徑")
+    parser = argparse.ArgumentParser(description="從 twlottery.in 抓取賓果賓果歷史開獎並存成 CSV 或 JSON")
+    parser.add_argument(
+        "-o",
+        "--out",
+        type=str,
+        default="bingobingo_history.csv",
+        help="輸出路徑，副檔名為 .csv 則輸出 CSV，.json 則輸出給網頁使用的 JSON",
+    )
     parser.add_argument("--max", type=int, default=0, help="最多保留期數（0=全部）")
     args = parser.parse_args()
-    ok = fetch_and_save_csv(args.out, max_draws=args.max)
+    ok = fetch_and_save(args.out, max_draws=args.max)
     return 0 if ok else 1
 
 
